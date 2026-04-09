@@ -303,7 +303,65 @@ Direct and relayed requests are supported for:
 If a request arrives by relay and a reply is generated, the reply follows the
 reverse path.
 
-## 10. Requested JR Window
+## 10. How To Read Reports
+
+Here are a few simple examples using fake callsigns.
+
+### Example 1: JR
+
+`JR.1.calls1.+10.3;2.calls2.calls1.+8.9;3.calls3.calls2.+6.15`
+
+Read it like this:
+- `1.calls1.+10.3`
+  - wave 1
+  - `calls1` is directly reported first
+  - `+10` is the SNR
+  - `3` means about 3 minutes old
+- `2.calls2.calls1.+8.9`
+  - wave 2
+  - `calls2` is behind `calls1`
+  - `+8` is the SNR
+  - `9` means about 9 minutes old
+- `3.calls3.calls2.+6.15`
+  - wave 3
+  - `calls3` is behind `calls2`
+  - `+6` is the SNR
+  - `15` means about 15 minutes old
+
+So the structure is:
+- responder -> `calls1` -> `calls2` -> `calls3`
+
+### Example 2: HR
+
+`HR.1.*calls1.+12.2;1.calls2.+9.4;1.calls3.+7.8`
+
+Read it like this:
+- every entry is `wave 1`
+- these are stations heard directly by the responding node
+- `*calls1` means `calls1` is recognized as a node
+- `+12`, `+9`, `+7` are SNR values
+- `2`, `4`, `8` are freshness in minutes
+
+So this means:
+- the responding node directly hears `calls1`, `calls2`, and `calls3`
+- `calls1` is a node
+
+### Example 3: HRC
+
+`JR.1.calls4.+11.2`
+
+An `HRC` reply is a very small targeted reply.
+
+Read it like this:
+- the requested node can directly communicate with `calls4`
+- the evidence is wave 1 only
+- `+11` is the SNR
+- `2` means about 2 minutes old
+
+If no direct communication is found for the searched callsign, no `HRC` reply
+is generated.
+
+## 11. Requested JR Window
 
 When JS8Mesh can prepare a reply for an incoming request, it opens the
 `Requested JR` window directly.
@@ -325,7 +383,7 @@ Buttons:
 If no report can be generated, JS8Mesh skips quietly and records the result in
 the appropriate log where applicable.
 
-## 11. Relay Message Builder
+## 12. Relay Message Builder
 
 The `Relay Message Builder` lets you:
 - select a pathway from `Linear Pathways`
@@ -386,7 +444,7 @@ Pathways that have proven successful can move higher in the list, helping JS8Mes
 prefer pathways that worked in real use instead of only looking at hearing
 evidence.
 
-## 12. Topology
+## 13. Topology
 
 The `Topology` window has two views:
 
@@ -402,7 +460,7 @@ Mesh wave filters can show:
 
 Incoming `HR` reports are mirrored into mesh topology as direct-hearing edges.
 
-## 13. Loggers
+## 14. Loggers
 
 Use `Loggers` to open:
 
@@ -419,7 +477,7 @@ These windows support:
 - export `.csv` where applicable
 - clear log where applicable
 
-## 14. RX Monitor
+## 15. RX Monitor
 
 Use the `RX Monitor` button on the main window to view the JS8Call receive
 monitor inside JS8Mesh.
@@ -429,14 +487,14 @@ Behavior:
 - follows new lines at the bottom
 - stops auto-follow if you scroll away manually
 
-## 15. Maintenance
+## 16. Maintenance
 
 JS8Mesh keeps some logs/history and may occasionally prompt for maintenance.
 
 When maintenance runs, entries older than 90 days are removed from retained log
 files.
 
-## 16. GitHub / Release Use
+## 17. GitHub / Release Use
 
 If you are using the packaged `.exe` release:
 - you do not need to install `pyjs8call` separately
@@ -463,7 +521,7 @@ python3 -m pip install pyjs8call
 python3 main.py
 ```
 
-## 17. License
+## 18. License
 
 JS8Mesh is licensed under `GPL-3.0-only`.
 
@@ -474,7 +532,7 @@ See:
 - [LICENSE](LICENSE)
 - [NAME_USE.md](NAME_USE.md)
 
-## 18. Credits
+## 19. Credits
 
 - Uses `pyjs8call` for JS8Call integration.
 - `"JC"` concepts were inspired in part by JS8Spotter.
