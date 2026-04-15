@@ -156,6 +156,7 @@ class JS8MeshGUI:
         self.requested_jr_reply_target = ""
         self.requested_jr_first_hop = ""
         self.requested_jr_requested_target_callsign = ""
+        self.requested_jr_response_log_event_id = ""
         self.requested_jr_hr_log_event_id = ""
         self.requested_jr_kind_var = tk.StringVar(value="General")
         self.requested_jr_mode_var = tk.StringVar(value="DEFAULT")
@@ -2338,139 +2339,18 @@ class JS8MeshGUI:
                 origin_y = 0
                 screen_width = max(1, int(dialog.winfo_screenwidth() or 1))
                 screen_height = max(1, int(dialog.winfo_screenheight() or 1))
-            x = max(origin_x, int(origin_x + (screen_width - width) / 2))
-            y = max(origin_y, int(origin_y + (screen_height - height) / 2))
+            max_x = max(origin_x, origin_x + screen_width - width)
+            max_y = max(origin_y, origin_y + screen_height - height)
+            x = int(origin_x + (screen_width - width) / 2)
+            y = int(origin_y + (screen_height - height) / 2)
+            x = min(max(origin_x, x), max_x)
+            y = min(max(origin_y, y), max_y)
             dialog.geometry(f"+{x}+{y}")
         except Exception:
             pass
 
     def _js8call_speed_warning_dialog(self, parent=None, refocus_widget=None):
-        if settings.get("js8call_speed_warning_dont_show_again"):
-            return True
-
-        result = {"continue": False}
-        parent_widget = parent if parent is not None else self.root
-
-        dialog = tk.Toplevel(parent_widget)
-        dialog.title("Important Warning")
-        dialog.configure(bg=self.bg_color)
-        dialog.resizable(False, False)
-        dialog.transient(parent_widget)
-        dialog.grab_set()
-
-        outer = tk.Frame(dialog, bg=self.bg_color, padx=18, pady=18)
-        outer.pack(fill="both", expand=True)
-
-        tk.Label(
-            outer,
-            text="Important Warning",
-            bg=self.bg_color,
-            fg="#ff4444",
-            justify="left",
-            anchor="w",
-            font=("TkDefaultFont", 12, "bold")
-        ).pack(anchor="w", pady=(0, 10))
-
-        tk.Label(
-            outer,
-            text=(
-            "JS8Mesh will try and change JS8Call speed mode on your computer. "
-                "If it does not work it may harm your transceiver. "
-                "You have been warned. You know. Do test."
-            ),
-            bg=self.bg_color,
-            fg=self.fg_color,
-            justify="left",
-            anchor="w",
-            wraplength=480,
-            font=("TkDefaultFont", 10)
-        ).pack(anchor="w")
-
-        continue_var = tk.BooleanVar(value=False)
-        dont_show_var = tk.BooleanVar(value=bool(settings.get("js8call_speed_warning_dont_show_again", False)))
-
-        tk.Checkbutton(
-            outer,
-            text="I know, let me continue",
-            variable=continue_var,
-            bg=self.bg_color,
-            fg=self.fg_color,
-            selectcolor=self.bg_color,
-            activebackground=self.bg_color,
-            activeforeground=self.fg_color,
-            highlightthickness=0
-        ).pack(anchor="w", pady=(14, 6))
-
-        tk.Checkbutton(
-            outer,
-            text="Don't show again.",
-            variable=dont_show_var,
-            bg=self.bg_color,
-            fg=self.fg_color,
-            selectcolor=self.bg_color,
-            activebackground=self.bg_color,
-            activeforeground=self.fg_color,
-            highlightthickness=0
-        ).pack(anchor="w")
-
-        button_row = tk.Frame(outer, bg=self.bg_color)
-        button_row.pack(fill="x", pady=(16, 0))
-
-        def do_ok():
-            if not continue_var.get():
-                return
-            settings["js8call_speed_warning_acknowledged"] = True
-            settings["js8call_speed_warning_dont_show_again"] = bool(dont_show_var.get())
-            save_settings(settings)
-            result["continue"] = True
-            dialog.destroy()
-
-        def do_cancel():
-            result["continue"] = False
-            dialog.destroy()
-
-        tk.Button(
-            button_row,
-            text="OK",
-            command=do_ok,
-            bg=self.highlight_color,
-            fg=self.fg_color,
-            width=10
-        ).pack(side="left", padx=(0, 8))
-
-        tk.Button(
-            button_row,
-            text="Cancel",
-            command=do_cancel,
-            bg=self.highlight_color,
-            fg=self.fg_color,
-            width=10
-        ).pack(side="left")
-
-        dialog.protocol("WM_DELETE_WINDOW", do_cancel)
-        dialog.update_idletasks()
-
-        try:
-            x = parent_widget.winfo_rootx() + 80
-            y = parent_widget.winfo_rooty() + 80
-        except Exception:
-            x = self.root.winfo_rootx() + 80
-            y = self.root.winfo_rooty() + 80
-        dialog.geometry(f"+{x}+{y}")
-
-        self.root.wait_window(dialog)
-
-        target = refocus_widget
-        if target is not None:
-            try:
-                if target.winfo_exists():
-                    target.deiconify()
-                    target.lift()
-                    target.focus_force()
-            except Exception:
-                pass
-
-        return result["continue"]
+        return True
 
     def _refocus_mesh_window(self):
         try:
@@ -5168,7 +5048,7 @@ class JS8MeshGUI:
         if getattr(self, "auto_responder_log_window", None) is not None and self.auto_responder_log_window.has_window():
             self.refresh_auto_responder_log_window()
 
-    def _update_auto_responder_log_status(self, event_id, status, reason=""):
+    def _update_auto_responder_log_status(self, event_id, status, reason="", reply_text=None, speed=None):
         target_id = str(event_id or "").strip()
         if not target_id:
             return
@@ -5179,6 +5059,10 @@ class JS8MeshGUI:
             item["status"] = str(status or "").strip().upper()
             if reason:
                 item["reason"] = str(reason)
+            if reply_text is not None:
+                item["reply_text"] = str(reply_text)
+            if speed is not None:
+                item["speed"] = str(speed or "").strip().upper()
             updated = True
             break
         if updated:
@@ -5428,6 +5312,17 @@ class JS8MeshGUI:
         ok_button.pack(side="left", padx=(0, 8))
         tk.Button(button_row, text=cancel_label, command=do_cancel, bg=self.highlight_color, fg=self.fg_color, width=12).pack(side="left")
 
+        def _do_ok_event(_event=None):
+            do_ok()
+            return "break"
+
+        def _do_cancel_event(_event=None):
+            do_cancel()
+            return "break"
+
+        dialog.bind("<Return>", _do_ok_event)
+        dialog.bind("<KP_Enter>", _do_ok_event)
+        dialog.bind("<Escape>", _do_cancel_event)
         dialog.protocol("WM_DELETE_WINDOW", do_cancel)
         self._center_toplevel_on_screen(dialog, width=780, height=430)
         dialog.deiconify()
@@ -5701,6 +5596,7 @@ class JS8MeshGUI:
         self.requested_jr_reply_target = ""
         self.requested_jr_first_hop = ""
         self.requested_jr_requested_target_callsign = ""
+        self.requested_jr_response_log_event_id = ""
         self.requested_jr_hr_log_event_id = ""
         self.requested_jr_hr_limit_blocked = False
 
@@ -5809,9 +5705,9 @@ class JS8MeshGUI:
             return
 
         try:
-            selected = preview_widget.get("sel.first", "sel.last")
+            selected = preview_widget.cget("text")
         except Exception:
-            selected = preview_widget.get("1.0", "end-1c")
+            selected = ""
         selected = str(selected or "").strip()
         if not selected:
             return
@@ -5845,6 +5741,9 @@ class JS8MeshGUI:
     def _build_mesh_preview_data(self, station_count, lookback_minutes, mode_name=None, tx_limit_minutes=None,
                                  copy_to_clipboard=False, update_window=True, excluded_callsigns=None,
                                  report_scope="GENERAL", target_callsign=None, target_prefix="@JS8MESH"):
+        raw_target_callsign = str(target_callsign or "").strip()
+        if raw_target_callsign.upper() in ("", "NONE", "NULL"):
+            target_callsign = None
         lines = self.generate_mesh_broadcast_lines(
             station_count=station_count,
             lookback_minutes=lookback_minutes,
@@ -6076,11 +5975,17 @@ class JS8MeshGUI:
                 target_callsign=None,
                 target_prefix=self.requested_jr_reply_target or requester or "@JS8MESH",
             )
+            self._append_auto_responder_debug(
+                "Requested JR preview generated: "
+                f"kind={kind_key} requester={requester} reply_target={self.requested_jr_reply_target or requester or ''} "
+                f"lookback={lookback_minutes} mode={self._current_requested_jr_send_mode()} "
+                f"default_mode={self._requested_jr_default_mode()} lines_count={len(lines)} "
+                f"preview='{str(preview_text or '')[:200]}'"
+            )
             if not lines:
                 preview_text = "No JR can be generated at the moment."
         try:
-            preview_widget.delete("1.0", "end")
-            preview_widget.insert("1.0", preview_text)
+            preview_widget.configure(text=preview_text)
         except Exception:
             self.requested_jr_preview_widget = None
         requester = normalize_callsign(self.requested_jr_requester_callsign)
@@ -6332,21 +6237,23 @@ class JS8MeshGUI:
         )
         preview_frame.pack(fill="both", expand=True, pady=(12, 0))
 
-        preview_text = tk.Text(
+        preview_text = tk.Label(
             preview_frame,
-            height=10,
+            text="",
             width=72,
-            wrap="word",
-            undo=False
+            height=10,
+            bg="#ffffff",
+            fg="#000000",
+            anchor="nw",
+            justify="left",
+            wraplength=560,
+            padx=6,
+            pady=6,
         )
         preview_text.pack(side="left", fill="both", expand=True)
         self.requested_jr_preview_widget = preview_text
         preview_text.bind("<Button-3>", self._show_requested_jr_preview_context_menu)
         preview_text.bind("<Control-c>", lambda _event: self._copy_requested_jr_preview())
-
-        scroll_y = tk.Scrollbar(preview_frame, orient="vertical", command=preview_text.yview)
-        scroll_y.pack(side="right", fill="y")
-        preview_text.configure(yscrollcommand=scroll_y.set)
 
         button_row = tk.Frame(outer, bg=self.bg_color)
         button_row.pack(fill="x", pady=(14, 0))
@@ -6376,12 +6283,21 @@ class JS8MeshGUI:
                     refocus_widget=dialog,
                 )
                 return
-            log_event_id = self._append_requested_jr_response_log(
-                preview_text=preview_text_value,
-                speed=effective_mode,
-                status="QUEUED",
-                reason="Requested JR response queued for send to JS8Call.",
-            )
+            log_event_id = str(self.requested_jr_response_log_event_id or "").strip()
+            if log_event_id:
+                self._update_auto_responder_log_status(
+                    log_event_id,
+                    "QUEUED",
+                    "Requested JR response queued for send to JS8Call.",
+                    reply_text=preview_text_value,
+                )
+            else:
+                log_event_id = self._append_requested_jr_response_log(
+                    preview_text=preview_text_value,
+                    speed=effective_mode,
+                    status="QUEUED",
+                    reason="Requested JR response queued for send to JS8Call.",
+                )
             hr_event_id = str(self.requested_jr_hr_log_event_id or "").strip()
             if hr_event_id:
                 self._update_hr_log_status(
@@ -6391,6 +6307,11 @@ class JS8MeshGUI:
                     reply_text=preview_text_value,
                     speed=effective_mode,
                 )
+            def _on_requested_jr_send_triggered(_result):
+                try:
+                    self._close_requested_jr_window()
+                except Exception:
+                    pass
             def _on_requested_jr_send_success(result):
                 if bool(result.get("manual_send_only")):
                     self._update_auto_responder_log_status(
@@ -6406,6 +6327,10 @@ class JS8MeshGUI:
                             reply_text=preview_text_value,
                             speed=effective_mode,
                         )
+                    try:
+                        self._close_requested_jr_window()
+                    except Exception:
+                        pass
                     return
                 if bool(result.get("tx_completed")):
                     self._update_auto_responder_log_status(
@@ -6472,9 +6397,14 @@ class JS8MeshGUI:
                 target_mode=effective_mode,
                 settings_key=None,
                 parent_window=dialog,
+                early_success_callback=_on_requested_jr_send_triggered,
                 success_callback=_on_requested_jr_send_success,
                 error_callback=_on_requested_jr_send_error,
             )
+
+        def _do_send_event(_event=None):
+            do_send()
+            return "break"
 
         tk.Button(
             button_row,
@@ -6502,6 +6432,9 @@ class JS8MeshGUI:
             fg=self.fg_color,
             width=12
         ).pack(side="left", padx=(8, 0))
+
+        dialog.bind("<Return>", _do_send_event)
+        dialog.bind("<KP_Enter>", _do_send_event)
 
         dialog.protocol("WM_DELETE_WINDOW", self._close_requested_jr_window)
         dialog.update_idletasks()
@@ -6532,6 +6465,7 @@ class JS8MeshGUI:
             f"msg='{str(record.get('msg', '')).strip()}' tokens={command_tokens}"
         )
         requested_kind = None
+        requested_jr_event_id = ""
         hr_event_id = ""
         hrc_target_callsign = ""
         if command_tokens[:2] == ["JC", "JR"]:
@@ -6625,9 +6559,37 @@ class JS8MeshGUI:
             self.requested_jr_requested_target_var.set("")
         self.requested_jr_kind_var.set(requested_kind)
         self.requested_jr_mode_var.set("DEFAULT")
+        requested_jr_event_id = self._append_requested_jr_response_log(
+            preview_text="",
+            speed="",
+            status="RECEIVED",
+            reason=f"{request_type} request received.",
+        )
+        self.requested_jr_response_log_event_id = requested_jr_event_id
+        effective_default_mode = self._requested_jr_default_mode()
+        if effective_default_mode == "SLOW":
+            if requested_jr_event_id:
+                self._update_auto_responder_log_status(
+                    requested_jr_event_id,
+                    "SKIPPED",
+                    "Skipped: calculated default speed is SLOW.",
+                )
+            if requested_kind == "Heard 4 Stations" and hr_event_id:
+                self._update_hr_log_status(
+                    hr_event_id,
+                    "SKIPPED",
+                    "Skipped: calculated default speed is SLOW.",
+                )
+            return True
         self._show_requested_jr_window()
         preview_text, lines = self._update_requested_jr_preview()
         if not lines:
+            if requested_jr_event_id:
+                self._update_auto_responder_log_status(
+                    requested_jr_event_id,
+                    "SKIPPED",
+                    str(preview_text or "No JR can be generated at the moment."),
+                )
             self._close_requested_jr_window()
             if requested_kind == "Heard 4 Stations" and hr_event_id:
                 self._update_hr_log_status(hr_event_id, "SKIPPED", str(preview_text or "No HR can be generated at the moment."))
@@ -6736,6 +6698,9 @@ class JS8MeshGUI:
     def generate_mesh_broadcast_lines(self, station_count, lookback_minutes, excluded_callsigns=None, report_scope="GENERAL", target_callsign=None):
         source_station = self.user_call_var.get().strip().upper()
         if not source_station:
+            self._append_auto_responder_debug(
+                f"Mesh broadcast skipped: missing source station for scope={report_scope}."
+            )
             return []
 
         excluded_norms = {
@@ -6745,7 +6710,11 @@ class JS8MeshGUI:
         }
 
         records_for_view = self._records_for_selected_frequency()
-        target_norm = normalize_callsign(target_callsign)
+        raw_target_callsign = str(target_callsign or "").strip()
+        if raw_target_callsign.upper() in ("", "NONE", "NULL"):
+            target_norm = ""
+        else:
+            target_norm = normalize_callsign(raw_target_callsign)
         graph = build_send_graph(records_for_view, user_cs=source_station, min_snr=-30, max_age_minutes=99999999)
         reports_by_source = self._mesh_reports_by_source()
         scope_name = str(report_scope or "GENERAL").strip().upper()
@@ -6779,6 +6748,7 @@ class JS8MeshGUI:
 
         wave1_candidates = []
         direct_candidates = set()
+        candidate_debug = []
         for left_callsign, right_callsign in graph.keys():
             if left_callsign == normalize_callsign(source_station):
                 direct_candidates.add(right_callsign)
@@ -6787,18 +6757,28 @@ class JS8MeshGUI:
 
         for candidate_source in direct_candidates:
             if candidate_source == normalize_callsign(source_station):
+                candidate_debug.append((candidate_source, "skip:self"))
                 continue
             if candidate_source in excluded_norms:
+                candidate_debug.append((candidate_source, "skip:excluded"))
                 continue
             if not scope_allows(candidate_source):
+                candidate_debug.append((candidate_source, "skip:scope"))
                 continue
 
             link = self._mesh_link_info(graph, source_station, candidate_source)
             if not link:
+                candidate_debug.append((candidate_source, "skip:no_two_way_link"))
                 continue
             if link["category"] not in ("TURBO", "FAST"):
+                candidate_debug.append(
+                    (candidate_source, f"skip:category:{link['category']} snr={round(float(link['snr']), 1)} age={link['minutes_ago']}")
+                )
                 continue
             if int(link["minutes_ago"]) > int(lookback_minutes):
+                candidate_debug.append(
+                    (candidate_source, f"skip:age:{link['minutes_ago']}>{lookback_minutes} category={link['category']} snr={round(float(link['snr']), 1)}")
+                )
                 continue
 
             wave1_candidates.append({
@@ -6809,6 +6789,19 @@ class JS8MeshGUI:
                 "minutes_ago": link["minutes_ago"],
                 "category": link["category"],
             })
+            candidate_debug.append(
+                (candidate_source, f"keep:{link['category']} snr={round(float(link['snr']), 1)} age={link['minutes_ago']}")
+            )
+
+        self._append_auto_responder_debug(
+            "Mesh broadcast inputs: "
+            f"scope={scope_name} source={source_station} lookback={lookback_minutes} "
+            f"station_count={station_count} tx_limit={settings.get('mesh_tx_time_limit_minutes', 0)} "
+            f"target={target_norm or ''} excluded={sorted(item for item in excluded_norms if item)} "
+            f"direct_candidates={sorted(direct_candidates)} wave_nodes={sorted(wave_node_calls)} "
+            f"wave1_candidates={[(item['node'], item['category'], item['minutes_ago'], round(float(item['snr']), 1)) for item in wave1_candidates]} "
+            f"candidate_debug={candidate_debug[:40]}"
+        )
 
         wave1_candidates.sort(
             key=lambda item: (
@@ -6902,6 +6895,11 @@ class JS8MeshGUI:
                 lines.append(f"{prefix}.{entry_text}")
             else:
                 lines.append(entry_text)
+
+        self._append_auto_responder_debug(
+            f"Mesh broadcast result: scope={scope_name} selected_nodes={[(item['node'], item['wave'], item['parent']) for item in selected_nodes]} "
+            f"lines={lines}"
+        )
 
         return lines
 
@@ -7157,12 +7155,19 @@ class JS8MeshGUI:
             return limited_lines
 
         limit_seconds = limit_minutes * 60
+        original_lines = list(limited_lines)
         while limited_lines:
             preview_text = "@JS8MESH " + ";".join(limited_lines)
             estimated_seconds = estimate_mesh_report_seconds(preview_text, mode_name)
             if estimated_seconds <= limit_seconds:
                 break
             limited_lines.pop()
+
+        if len(limited_lines) != len(original_lines):
+            self._append_auto_responder_debug(
+                f"Mesh TX limit trimmed lines: mode={mode_name} limit_minutes={limit_minutes} "
+                f"before={original_lines} after={limited_lines}"
+            )
 
         return limited_lines
 
@@ -7257,7 +7262,7 @@ class JS8MeshGUI:
         frames = max(2, 1 + ((chars + 12) // 13))
         return int(frames * MODE_SECONDS.get(mode, 15))
 
-    def _send_text_to_js8call_async(self, text, target_mode, settings_key=None, parent_window=None, success_callback=None, error_callback=None, silent_failure=False, skip_speed_warning_dialog=False, tolerate_unconfirmed_manual_stage=False):
+    def _send_text_to_js8call_async(self, text, target_mode, settings_key=None, parent_window=None, success_callback=None, error_callback=None, silent_failure=False, skip_speed_warning_dialog=False, tolerate_unconfirmed_manual_stage=False, early_success_callback=None):
         text = str(text or "").strip()
         target_mode = str(target_mode or "NORMAL").strip().upper() or "NORMAL"
         if not text:
@@ -7294,6 +7299,14 @@ class JS8MeshGUI:
                             text=text,
                             target_speed=target_mode,
                             wait_timeout=timeout_seconds,
+                            on_tx_started=(
+                                (lambda partial_result: self.root.after(
+                                    0,
+                                    lambda partial_result=dict(partial_result): early_success_callback(partial_result),
+                                ))
+                                if callable(early_success_callback)
+                                else None
+                            ),
                         )
                     else:
                         queued_ok = bridge.set_tx_text(text)
@@ -7309,6 +7322,11 @@ class JS8MeshGUI:
                             "manual_send_only": True,
                             "stage_confirmed": bool(queued_ok),
                         }
+                        if callable(early_success_callback):
+                            try:
+                                self.root.after(0, lambda result=dict(result): early_success_callback(result))
+                            except Exception:
+                                pass
             except JS8CallBridgeError as exc:
                 error_text = str(exc)
                 if callable(error_callback):
@@ -9342,19 +9360,23 @@ class JS8MeshGUI:
             return
 
         added_count = 0
+        appended_records = []
 
         for parsed, source_line in new_records:
             classify_callsign(parsed["from"])
             classify_callsign(parsed["to"])
 
             if self._append_record(parsed, source_line=source_line, save_immediately=False):
-                self.add_to_activity(parsed)
-                matched_watched_callsigns = self._watched_callsigns_matching_record(parsed)
-                if matched_watched_callsigns:
-                    self._show_watched_callsign_alert(parsed, matched_watched_callsigns)
-                self._handle_js8mesh_command_record(parsed)
-                self._maybe_process_ack_record(parsed)
+                appended_records.append(parsed)
                 added_count += 1
+
+        for parsed in appended_records:
+            self.add_to_activity(parsed)
+            matched_watched_callsigns = self._watched_callsigns_matching_record(parsed)
+            if matched_watched_callsigns:
+                self._show_watched_callsign_alert(parsed, matched_watched_callsigns)
+            self._handle_js8mesh_command_record(parsed)
+            self._maybe_process_ack_record(parsed)
 
         if added_count > 0:
             save_snr_reports(snr_reports_db)
