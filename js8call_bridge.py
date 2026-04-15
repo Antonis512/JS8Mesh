@@ -203,10 +203,11 @@ class JS8CallBridge:
             return False
         return str(confirmed).strip() == str(text or "").strip()
 
-    def wait_for_text_cycle(self, timeout_seconds=600):
+    def wait_for_text_cycle(self, timeout_seconds=600, on_tx_started=None):
         deadline = time.time() + max(5.0, float(timeout_seconds or 600))
         saw_non_empty = False
         last_text = ""
+        notified_tx_started = False
 
         while time.time() < deadline:
             current = self.get_tx_text()
@@ -218,7 +219,14 @@ class JS8CallBridge:
             last_text = current
 
             if current.strip():
-                saw_non_empty = True
+                if not saw_non_empty:
+                    saw_non_empty = True
+                    if callable(on_tx_started) and not notified_tx_started:
+                        try:
+                            on_tx_started()
+                        except Exception:
+                            pass
+                        notified_tx_started = True
             elif saw_non_empty:
                 return {
                     "tx_started": True,
@@ -265,7 +273,7 @@ class JS8CallBridge:
             "speed_switched": switched,
         }
 
-    def send_text_with_temporary_speed(self, text, target_speed=None, wait_timeout=600):
+    def send_text_with_temporary_speed(self, text, target_speed=None, wait_timeout=600, on_tx_started=None):
         result = {
             "requested_speed": str(target_speed or "").strip().upper() or None,
             "original_speed": None,
@@ -294,7 +302,16 @@ class JS8CallBridge:
             result["speed_switched"] = True
 
         self.send_text(text)
-        cycle = self.wait_for_text_cycle(timeout_seconds=wait_timeout)
+
+        def _notify_tx_started():
+            result["tx_started"] = True
+            if callable(on_tx_started):
+                try:
+                    on_tx_started(dict(result))
+                except Exception:
+                    pass
+
+        cycle = self.wait_for_text_cycle(timeout_seconds=wait_timeout, on_tx_started=_notify_tx_started)
         result["tx_started"] = bool(cycle.get("tx_started"))
         result["tx_completed"] = bool(cycle.get("tx_completed"))
 
