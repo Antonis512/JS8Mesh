@@ -1,6 +1,6 @@
-# JS8Mesh v0.9.0-beta
+# JS8Mesh v0.10.0-beta
 
-JS8Mesh v0.9.0-beta is a human-supervised "mesh" awareness and relay tool for JS8Call.
+JS8Mesh v0.10.0-beta is a human-supervised "mesh" awareness and relay tool for JS8Call.
 
 JS8Mesh is not an automated routing mesh network. In JS8Call, relay stations are
 human operators who decide every time whether they want to be part of a relay chain or not.

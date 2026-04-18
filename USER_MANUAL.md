@@ -191,9 +191,9 @@ text or also hand it off to JS8Call.
 Use `Settings > Sync Frequency from JS8Call` if you want JS8Mesh to follow the
 frequency currently used in JS8Call.
 
-### JR/HR TX Time Limit
+### Report TX Time Limit
 
-Use `Settings > JR/HR TX Time Limit` to set the default transmit-time limit for
+Use `Settings > Report TX Time Limit` to set the default transmit-time limit for
 generated:
 
 - `JR`
@@ -232,24 +232,41 @@ Practically, that means all information ever noted there.
 
 ## 8. Mesh Reports Menu
 
-### Request JR/HR
+### Request Report
 
-Use `Mesh Reports > Request JR/HR` to send these request types:
+Use `Mesh Reports > Request Report` to send these request types from the
+request window:
 
-- `JR`
+- `General`
+  - sends `JR`
   - general structured mesh report
-- `JRN`
+- `Nodes Only`
+  - sends `JRN`
   - nodes only
-- `JRS`
+- `Stations Only`
+  - sends `JRS`
   - stations only
-- `HR`
+- `Heard 4 Stations`
+  - sends `HR`
   - direct-heard station snapshot
-- `HRC`
-  - ask whether the node can directly communicate with a specific callsign
+- `Can Relay to Callsign`
+  - sends `HRC`
+  - asks whether the node can directly communicate with a specific callsign
+- `Find Callsign`
+  - sends `FIND`
+  - asks a node or group of nodes to watch for a specific callsign and report
+    back later if it is heard
 
 Requests can be:
 - direct to a node
 - relayed to a node
+
+For `Find Callsign`:
+- direct `FIND` is kept by the receiving node and is not rebroadcast
+- group `@JS8MESH FIND` may be delayed and rebroadcast
+- held searches last 24 hours
+- if the target is later heard and a return path exists, JS8Mesh prepares a
+  `FINDR`
 
 ### TX Mesh Reports
 
@@ -291,6 +308,36 @@ If yes, JS8Mesh prepares a one-line `JR` reply about that callsign only.
 
 If no direct communication is found, no reply is generated.
 
+### FIND
+
+Asks a node or nodes to watch for one specific callsign for up to 24 hours.
+
+Two main use styles are supported:
+- direct to a specific node
+- group request through `@JS8MESH`
+
+Direct `FIND`:
+- is stored by the receiving node for itself
+- is not rebroadcast automatically
+
+Group `FIND`:
+- can be stored by multiple receiving nodes
+- may be rebroadcast after a random delay
+- uses duplicate control so the same search is not repeated uselessly
+
+If the searched callsign is already heard locally, JS8Mesh can prepare a
+result immediately.
+
+If the searched callsign is heard later and a return path is available, JS8Mesh
+prepares a `FINDR`.
+
+### FINDR
+
+`FINDR` is the return message for a successful `FIND`.
+
+It reports that the searched callsign was heard, with the relevant freshness
+and SNR information.
+
 ### Relayed Requests
 
 Direct and relayed requests are supported for:
@@ -299,6 +346,7 @@ Direct and relayed requests are supported for:
 - `JRS`
 - `HR`
 - `HRC`
+- `FIND`
 
 If a request arrives by relay and a reply is generated, the reply follows the
 reverse path.
@@ -361,16 +409,16 @@ Read it like this:
 If no direct communication is found for the searched callsign, no `HRC` reply
 is generated.
 
-## 11. Requested JR Window
+## 11. Requested Report Window
 
 When JS8Mesh can prepare a reply for an incoming request, it opens the
-`Requested JR` window directly.
+`Requested Report` window directly.
 
 This window shows:
 - who requested the report
 - the request path
 - the requested target callsign for `HRC`, when applicable
-- prepared reply text
+- prepared text
 - estimated TX time
 - default speed mode
 - what JS8Mesh will try to do in JS8Call before send
@@ -464,9 +512,11 @@ Incoming `HR` reports are mirrored into mesh topology as direct-hearing edges.
 
 Use `Loggers` to open:
 
-- `Requested JR Responds Log`
+- `Requested Report Responds Log`
 - `TX Mesh Reports Log`
 - `HR Log`
+- `My Find Searches`
+- `Held Find Searches`
 - `Past Relays Log`
 
 These windows support:

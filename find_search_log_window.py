@@ -2,12 +2,22 @@ import tkinter as tk
 from tkinter import ttk
 
 
-class AutoResponderLogWindow:
-    def __init__(self, master, bg_color, fg_color, highlight_color, clear_callback=None, export_callback=None,
-                 export_csv_callback=None,
-    title_text="Requested Report Responds Log", empty_summary_text="No Requested Report response activity loaded.",
-    summary_prefix="Requested Report response log entries",
-                 heading_help=None):
+class FindSearchLogWindow:
+    def __init__(
+        self,
+        master,
+        bg_color,
+        fg_color,
+        highlight_color,
+        clear_callback=None,
+        export_callback=None,
+        export_csv_callback=None,
+        send_selected_callback=None,
+        title_text="Find Searches",
+        empty_summary_text="No active find searches loaded.",
+        summary_prefix="Find search entries",
+        heading_help=None,
+    ):
         self.master = master
         self.bg_color = bg_color
         self.fg_color = fg_color
@@ -15,6 +25,7 @@ class AutoResponderLogWindow:
         self.clear_callback = clear_callback
         self.export_callback = export_callback
         self.export_csv_callback = export_csv_callback
+        self.send_selected_callback = send_selected_callback
         self.title_text = title_text
         self.empty_summary_text = empty_summary_text
         self.summary_prefix = summary_prefix
@@ -23,22 +34,26 @@ class AutoResponderLogWindow:
         self.tree = None
         self.summary_var = tk.StringVar(value=self.empty_summary_text)
         self._rows_by_item = {}
+        self._source_rows = []
         self._tooltip_window = None
         self._tooltip_label = None
         self._active_heading_key = None
-        self._sort_column = "timestamp"
+        self._sort_column = "created_at"
         self._sort_descending = True
-        default_help = {
-                "timestamp": "When the Requested Report response event was recorded.",
-            "requester": "The station that requested the report.",
-            "request_type": "Requested report type: JR, JRN, or JRS.",
-            "frequency": "Frequency used for this event.",
-            "reply_text": "Generated reply text, if any.",
-            "speed": "Selected or calculated send speed used for the reply.",
-            "status": "QUEUED = JS8Mesh prepared the send. STAGED = text was loaded into JS8Call only. SENT = transmission started, with the reason column telling whether clean finish was confirmed. SKIPPED = send was canceled or failed.",
-            "reason": "Reason for the result, especially if the event was skipped.",
-        }
-        self._heading_help = dict(heading_help or default_help)
+        self._selected_find_ids = set()
+        self._heading_help = dict(
+            heading_help
+            or {
+                "created_at": "When the search request was created or refreshed.",
+                "target_callsign": "The callsign being searched for.",
+                "requester": "Who is searching for this callsign.",
+                "frequency": "Frequency this search applies to.",
+                "return_path": "Preferred current path to return a FINDR result.",
+                "status": "ACTIVE, FOUND, SENT, EXPIRED, or SKIPPED.",
+                "expires_in": "Time remaining until the 24-hour search expires.",
+                "details": "Extra details such as who found the callsign or why the search was skipped.",
+            }
+        )
 
     def has_window(self):
         return self.window is not None and self.window.winfo_exists()
@@ -100,6 +115,16 @@ class AutoResponderLogWindow:
                 width=12,
             ).pack(side="right")
 
+        if callable(self.send_selected_callback):
+            tk.Button(
+                top,
+                text="Send Selected Now",
+                command=self.send_selected_callback,
+                bg=self.highlight_color,
+                fg=self.fg_color,
+                width=16,
+            ).pack(side="right", padx=(8, 0))
+
         tk.Button(
             top,
             text="Close",
@@ -112,7 +137,7 @@ class AutoResponderLogWindow:
         table_frame = tk.Frame(outer, bg=self.bg_color)
         table_frame.pack(fill="both", expand=True)
 
-        columns = ("timestamp", "requester", "request_type", "frequency", "reply_text", "speed", "status", "reason")
+        columns = ("created_at", "target_callsign", "requester", "frequency", "return_path", "status", "expires_in", "details")
         self.tree = ttk.Treeview(
             table_frame,
             columns=columns,
@@ -121,31 +146,31 @@ class AutoResponderLogWindow:
         )
 
         headings = {
-            "timestamp": "TIME",
+            "created_at": "TIME",
+            "target_callsign": "TARGET",
             "requester": "REQUESTER",
-            "request_type": "TYPE",
             "frequency": "FREQ",
-            "reply_text": "GENERATED REPLY",
-            "speed": "SPEED",
+            "return_path": "RETURN PATH",
             "status": "STATUS",
-            "reason": "REASON",
+            "expires_in": "EXPIRES IN",
+            "details": "DETAILS",
         }
 
         widths = {
-            "timestamp": 145,
+            "created_at": 145,
+            "target_callsign": 110,
             "requester": 110,
-            "request_type": 70,
             "frequency": 90,
-            "reply_text": 360,
-            "speed": 70,
-            "status": 80,
-            "reason": 260,
+            "return_path": 230,
+            "status": 90,
+            "expires_in": 90,
+            "details": 350,
         }
 
         for col in columns:
-            anchor = "w" if col in ("reply_text", "reason") else "center"
+            anchor = "w" if col in ("return_path", "details") else "center"
             self.tree.heading(col, text=headings[col], command=lambda c=col: self._sort_rows(c))
-            self.tree.column(col, width=widths[col], anchor=anchor, stretch=(col in ("reply_text", "reason")))
+            self.tree.column(col, width=widths[col], anchor=anchor, stretch=(col in ("return_path", "details")))
 
         scroll_y = tk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
         scroll_x = tk.Scrollbar(table_frame, orient="horizontal", command=self.tree.xview)
@@ -161,10 +186,11 @@ class AutoResponderLogWindow:
         self.tree.bind("<Control-c>", self._copy_selected_rows)
         self.tree.bind("<Control-C>", self._copy_selected_rows)
         self.tree.bind("<Button-3>", self._show_context_menu)
+        self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
         self.tree.bind("<Motion>", self._on_tree_motion)
         self.tree.bind("<Leave>", lambda _event: self._hide_tooltip())
 
-        self.window.geometry("1320x520")
+        self.window.geometry("1280x520")
         self.window.focus_force()
 
     def close(self):
@@ -174,6 +200,7 @@ class AutoResponderLogWindow:
             self.window = None
             self.tree = None
             self._rows_by_item = {}
+            self._selected_find_ids = set()
         try:
             if self.master is not None and self.master.winfo_exists():
                 self.master.deiconify()
@@ -183,13 +210,24 @@ class AutoResponderLogWindow:
             pass
 
     def set_rows(self, rows):
-        self.show()
+        if not self.has_window():
+            self._source_rows = list(rows or [])
+            self.summary_var.set(f"{self.summary_prefix}: {len(self._source_rows)} | Newest first")
+            return
+        selected_ids = {
+            str((self._rows_by_item.get(item_id) or {}).get("find_id", "")).strip()
+            for item_id in self.tree.selection()
+            if isinstance(self._rows_by_item.get(item_id), dict)
+        }
+        selected_ids = {item_id for item_id in selected_ids if item_id}
+        if not selected_ids and self._selected_find_ids:
+            selected_ids = set(self._selected_find_ids)
         self._rows_by_item = {}
         self._source_rows = list(rows or [])
-        self._sort_rows(refresh=False)
+        self._sort_rows(refresh=False, selected_ids=selected_ids)
         self.summary_var.set(f"{self.summary_prefix}: {len(self._source_rows)} | Newest first")
 
-    def _sort_rows(self, column=None, refresh=True):
+    def _sort_rows(self, column=None, refresh=True, selected_ids=None):
         if self.tree is None:
             return
         if column:
@@ -197,38 +235,57 @@ class AutoResponderLogWindow:
                 self._sort_descending = not self._sort_descending
             else:
                 self._sort_column = column
-                self._sort_descending = True if column == "timestamp" else False
+                self._sort_descending = True if column == "created_at" else False
 
         rows = list(getattr(self, "_source_rows", []))
 
         def sort_key(row):
             mapping = {
-                "timestamp": str(row.get("timestamp", "") or ""),
+                "created_at": str(row.get("created_at", "") or ""),
+                "target_callsign": str(row.get("target_callsign", "") or ""),
                 "requester": str(row.get("requester", "") or ""),
-                "request_type": str(row.get("request_type", "") or ""),
                 "frequency": str(row.get("frequency", "") or ""),
-                "reply_text": str(row.get("reply_text", "") or ""),
-                "speed": str(row.get("speed", "") or ""),
+                "return_path": str(row.get("return_path", "") or ""),
                 "status": str(row.get("status", "") or ""),
-                "reason": str(row.get("reason", "") or ""),
+                "expires_in": str(row.get("expires_in", "") or ""),
+                "details": str(row.get("details", "") or ""),
             }
-            return mapping.get(self._sort_column, mapping["timestamp"])
+            return mapping.get(self._sort_column, mapping["created_at"])
 
         rows.sort(key=sort_key, reverse=bool(self._sort_descending))
         self.tree.delete(*self.tree.get_children(""))
+        selection_to_restore = []
         for row in rows:
             values = (
-                row.get("timestamp", ""),
+                row.get("created_at", ""),
+                row.get("target_callsign", ""),
                 row.get("requester", ""),
-                row.get("request_type", ""),
                 row.get("frequency", ""),
-                row.get("reply_text", ""),
-                row.get("speed", ""),
+                row.get("return_path", ""),
                 row.get("status", ""),
-                row.get("reason", ""),
+                row.get("expires_in", ""),
+                row.get("details", ""),
             )
             item_id = self.tree.insert("", "end", values=values)
-            self._rows_by_item[item_id] = values
+            self._rows_by_item[item_id] = dict(row)
+            row_find_id = str(row.get("find_id", "") or "").strip()
+            if selected_ids and row_find_id and row_find_id in selected_ids:
+                selection_to_restore.append(item_id)
+        if selection_to_restore:
+            try:
+                self.tree.selection_set(selection_to_restore)
+                self.tree.focus(selection_to_restore[0])
+                self._selected_find_ids = {
+                    str((self._rows_by_item.get(item_id) or {}).get("find_id", "")).strip()
+                    for item_id in selection_to_restore
+                    if isinstance(self._rows_by_item.get(item_id), dict)
+                }
+            except Exception:
+                pass
+        elif selected_ids is not None:
+            self._selected_find_ids = set(
+                item_id for item_id in selected_ids if str(item_id or "").strip()
+            )
 
     def _copy_selected_rows(self, _event=None):
         if self.tree is None:
@@ -238,8 +295,12 @@ class AutoResponderLogWindow:
             return "break"
         lines = []
         for item_id in selection:
-            values = self._rows_by_item.get(item_id) or self.tree.item(item_id).get("values", [])
-            lines.append("\t".join(str(value) for value in values))
+            row = self._rows_by_item.get(item_id)
+            values = self.tree.item(item_id).get("values", [])
+            if isinstance(row, dict):
+                lines.append("\t".join(str(value) for value in values))
+            else:
+                lines.append("\t".join(str(value) for value in values))
         text = "\n".join(lines).strip()
         if not text:
             return "break"
@@ -258,6 +319,8 @@ class AutoResponderLogWindow:
             self.tree.focus(row_id)
         menu = tk.Menu(self.tree, tearoff=0)
         menu.add_command(label="Copy Selected Row(s)", command=lambda: self._copy_selected_rows())
+        if callable(self.send_selected_callback):
+            menu.add_command(label="Send Selected Now", command=self.send_selected_callback)
         menu.add_command(label="Select All", command=lambda: self.tree.selection_set(self.tree.get_children("")))
         try:
             menu.tk_popup(event.x_root, event.y_root)
@@ -315,14 +378,14 @@ class AutoResponderLogWindow:
             return
         column_id = self.tree.identify_column(event.x)
         mapping = {
-            "#1": "timestamp",
-            "#2": "requester",
-            "#3": "request_type",
+            "#1": "created_at",
+            "#2": "target_callsign",
+            "#3": "requester",
             "#4": "frequency",
-            "#5": "reply_text",
-            "#6": "speed",
-            "#7": "status",
-            "#8": "reason",
+            "#5": "return_path",
+            "#6": "status",
+            "#7": "expires_in",
+            "#8": "details",
         }
         heading_key = mapping.get(column_id)
         if not heading_key:
@@ -331,3 +394,24 @@ class AutoResponderLogWindow:
         if heading_key == self._active_heading_key:
             return
         self._show_tooltip(heading_key, event.x_root, event.y_root)
+
+    def _on_tree_select(self, _event=None):
+        if self.tree is None:
+            self._selected_find_ids = set()
+            return
+        self._selected_find_ids = {
+            str((self._rows_by_item.get(item_id) or {}).get("find_id", "")).strip()
+            for item_id in self.tree.selection()
+            if isinstance(self._rows_by_item.get(item_id), dict)
+            and str((self._rows_by_item.get(item_id) or {}).get("find_id", "")).strip()
+        }
+
+    def selected_row_dicts(self):
+        if self.tree is None:
+            return []
+        rows = []
+        for item_id in self.tree.selection():
+            row = self._rows_by_item.get(item_id)
+            if isinstance(row, dict):
+                rows.append(dict(row))
+        return rows

@@ -4,6 +4,7 @@ import csv
 import json
 import hashlib
 import time
+import random
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -12,6 +13,7 @@ from datetime import datetime, timedelta
 FAILURE_COOLDOWN_MINUTES = 30
 ACK_RECOGNITION_WINDOW_MINUTES = 5
 RAW_ACTIVITY_RETENTION_DAYS = 30
+FIND_REQUEST_EXPIRY_HOURS = 24
 ACK_POSITIVE_TOKENS = {"RR", "QSL", "ACK", "YES", "FB", "RGR", "ROGER"}
 ACK_NEGATIVE_TOKENS = {"NO", "NACK", "ERR", "ERROR"}
 
@@ -24,6 +26,8 @@ from storage import (
     auto_responder_log_db,
     tx_mesh_reports_log_db,
     hr_log_db,
+    my_find_searches_db,
+    held_find_searches_db,
     APP_STORAGE_DIR,
     save_settings,
     save_reliability,
@@ -33,6 +37,8 @@ from storage import (
     save_auto_responder_log,
     save_tx_mesh_reports_log,
     save_hr_log,
+    save_my_find_searches,
+    save_held_find_searches,
     initialize_log_retention_schedule_if_needed,
     should_prune_retained_logs,
     prune_retained_logs,
@@ -45,6 +51,7 @@ from request_jr_window import RequestJRWindow
 from mesh_report_activity_window import MeshReportActivityWindow
 from topology_window import TopologyWindow
 from auto_responder_log_window import AutoResponderLogWindow
+from find_search_log_window import FindSearchLogWindow
 from relay_message_builder import RelayMessageBuilder
 from past_relays_window import (
     build_relay_history_entry,
@@ -89,7 +96,7 @@ from topology_engine import (
 class JS8MeshGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("JS8Mesh v0.9.0-beta by SV8TTL, 18SV8110")
+        self.root.title("JS8Mesh v0.10.0-beta by SV8TTL, 18SV8110")
 
         self.bg_color = "#222222"
         self.fg_color = "#ffffff"
@@ -143,6 +150,7 @@ class JS8MeshGUI:
         self._past_relays_drag_start = None
         self._past_relays_row_data = {}
         self._pending_ack_relays = []
+        self._pending_find_rebroadcasts = []
         self.auto_responder_debug_window = None
         self.auto_responder_debug_text = None
         self._jr_speed_cache = []
@@ -170,6 +178,7 @@ class JS8MeshGUI:
         self.requested_jr_mode_buttons = []
         self.requested_jr_saved_lookback_minutes = 50
         self.requested_jr_hr_limit_blocked = False
+        self._find_tick_running = False
         self.requested_jr_lookback_var.trace_add("write", self._on_requested_jr_input_changed)
         self.request_jr_window = None
         self.request_jr_picker_window = None
@@ -311,9 +320,9 @@ class JS8MeshGUI:
             clear_callback=self.clear_auto_responder_log,
             export_callback=self.export_auto_responder_log_txt,
             export_csv_callback=self.export_auto_responder_log_csv,
-            title_text="Requested JR Responds Log",
-            empty_summary_text="No Requested JR response activity loaded.",
-            summary_prefix="Requested JR response log entries",
+            title_text="Requested Report Responds Log",
+            empty_summary_text="No Requested Report response activity loaded.",
+            summary_prefix="Requested Report response log entries",
         )
         self.tx_mesh_reports_log_window = AutoResponderLogWindow(
             master=self.root,
@@ -357,6 +366,51 @@ class JS8MeshGUI:
                 "speed": "Selected or calculated send speed used for the HR reply.",
                 "status": "RECEIVED = HR request accepted for handling. QUEUED = user chose to respond and reply is ready. STAGED = text was loaded into JS8Call only. SENT = response was handed to JS8Call. SKIPPED = ignored, canceled, duplicate, or failed.",
                 "reason": "Reason describing what happened during the HR flow.",
+            },
+        )
+        self.my_find_searches_window = FindSearchLogWindow(
+            master=self.root,
+            bg_color=self.bg_color,
+            fg_color=self.fg_color,
+            highlight_color=self.highlight_color,
+            clear_callback=self.clear_my_find_searches_log,
+            export_callback=self.export_my_find_searches_log_txt,
+            export_csv_callback=self.export_my_find_searches_log_csv,
+            title_text="My Find Searches",
+            empty_summary_text="No active find searches started by me.",
+            summary_prefix="My find search entries",
+            heading_help={
+                "created_at": "When I started or refreshed this FIND request.",
+                "target_callsign": "The callsign I am trying to locate.",
+                "requester": "Always me in this logger.",
+                "frequency": "Frequency this search applies to.",
+                "return_path": "Where I sent the FIND request, such as a node or @JS8MESH.",
+                "status": "ACTIVE, FOUND, EXPIRED, or SKIPPED.",
+                "expires_in": "Time remaining before this 24-hour search expires.",
+                "details": "Who reported hearing the target, or why the search was skipped or expired.",
+            },
+        )
+        self.held_find_searches_window = FindSearchLogWindow(
+            master=self.root,
+            bg_color=self.bg_color,
+            fg_color=self.fg_color,
+            highlight_color=self.highlight_color,
+            clear_callback=self.clear_held_find_searches_log,
+            export_callback=self.export_held_find_searches_log_txt,
+            export_csv_callback=self.export_held_find_searches_log_csv,
+            send_selected_callback=self.send_selected_held_find_search_now,
+            title_text="Held Find Searches",
+            empty_summary_text="No active find searches being held for other nodes.",
+            summary_prefix="Held find search entries",
+            heading_help={
+                "created_at": "When this remote FIND request was first received or refreshed.",
+                "target_callsign": "The callsign another node is trying to locate.",
+                "requester": "The node that asked for this FIND search.",
+                "frequency": "Frequency this search applies to.",
+                "return_path": "Preferred current return path for sending FINDR back.",
+                "status": "ACTIVE, FOUND, SENT, EXPIRED, or SKIPPED.",
+                "expires_in": "Time remaining before this held search expires.",
+                "details": "What happened, including who was heard and how FINDR was routed.",
             },
         )
 
@@ -442,6 +496,7 @@ class JS8MeshGUI:
         threading.Thread(target=self.monitor_directed, daemon=True).start()
         self.root.after(3000, self._sync_frequency_from_js8call_tick)
         self.root.after(1000, self._mesh_scheduler_tick)
+        self.root.after(1000, self._find_search_tick)
         self.root.after(30000, self._last_success_tick)
         self.root.after(30000, self._relay_ack_tick)
         self.root.after(30000, self._topology_tick)
@@ -898,7 +953,7 @@ class JS8MeshGUI:
         settings_menu = tk.Menu(menu_bar, tearoff=0)
         settings_menu.add_command(label="Find DIRECTED.txt", command=self.select_file)
         settings_menu.add_command(label="Callsign", command=self.show_callsign_dialog)
-        settings_menu.add_command(label="JR/HR TX Time Limit", command=self.show_jr_tx_time_limit_dialog)
+        settings_menu.add_command(label="Report TX Time Limit", command=self.show_jr_tx_time_limit_dialog)
         settings_menu.add_command(label="TX Mesh Reports", command=self.show_tx_mesh_reports_settings_dialog)
         settings_menu.add_command(label="Add / Remove Frequency", command=self.show_frequency_management_dialog)
         settings_menu.add_command(label="API Settings", command=self.show_api_settings_dialog)
@@ -913,13 +968,15 @@ class JS8MeshGUI:
 
         mesh_reports_menu = tk.Menu(menu_bar, tearoff=0)
         mesh_reports_menu.add_command(label="TX Mesh Reports", command=self.show_mesh_network_window)
-        mesh_reports_menu.add_command(label="Request JR/HR", command=self.show_request_jr_window)
+        mesh_reports_menu.add_command(label="Request Report", command=self.show_request_jr_window)
         menu_bar.add_cascade(label="Mesh Reports", menu=mesh_reports_menu)
 
         loggers_menu = tk.Menu(menu_bar, tearoff=0)
         loggers_menu.add_command(label="TX Mesh Reports Log", command=self.show_tx_mesh_reports_log_window)
-        loggers_menu.add_command(label="Requested JR Responds Log", command=self.show_auto_responder_log_window)
+        loggers_menu.add_command(label="Requested Report Responds Log", command=self.show_auto_responder_log_window)
         loggers_menu.add_command(label="HR Log", command=self.show_hr_log_window)
+        loggers_menu.add_command(label="My Find Searches", command=self.show_my_find_searches_window)
+        loggers_menu.add_command(label="Held Find Searches", command=self.show_held_find_searches_window)
         loggers_menu.add_command(label="Past Relays Log", command=self.show_past_relays_window)
         menu_bar.add_cascade(label="Loggers", menu=loggers_menu)
 
@@ -2564,7 +2621,7 @@ class JS8MeshGUI:
 
     def show_jr_tx_time_limit_dialog(self):
         dialog = tk.Toplevel(self.root)
-        dialog.title("JR/HR TX Time Limit")
+        dialog.title("Report TX Time Limit")
         dialog.configure(bg=self.bg_color)
         dialog.resizable(False, False)
         dialog.transient(self.root)
@@ -2575,7 +2632,7 @@ class JS8MeshGUI:
 
         tk.Label(
             outer,
-            text="Set the default JR/HR TX time limit in minutes.\nThis limit is used when generating JR, JRN, JRS, HR, and HRC replies.",
+            text="Set the default Report TX time limit in minutes.\nThis limit is used when generating JR, JRN, JRS, HR, and HRC replies.",
             bg=self.bg_color,
             fg=self.fg_color,
             justify="left",
@@ -3068,7 +3125,7 @@ class JS8MeshGUI:
 
     def show_about(self):
         about = tk.Toplevel(self.root)
-        about.title("About JS8Mesh v0.9.0-beta")
+        about.title("About JS8Mesh v0.10.0-beta")
         about.configure(bg=self.bg_color)
 
         outer = tk.Frame(about, bg=self.bg_color, padx=18, pady=18)
@@ -3076,7 +3133,7 @@ class JS8MeshGUI:
 
         tk.Label(
             outer,
-            text="JS8Mesh v0.9.0-beta by SV8TTL, 18SV8110",
+            text="JS8Mesh v0.10.0-beta by SV8TTL, 18SV8110",
             bg=self.bg_color,
             fg=self.fg_color,
             anchor="w",
@@ -3387,6 +3444,7 @@ class JS8MeshGUI:
             "STATIONS_ONLY": "Stations Only",
             "HEARD_STATIONS": "Heard 4 Stations",
             "HEARD_RELAY_CANDIDATE": "Can Relay to Callsign",
+            "FIND_CALLSIGN": "Find Callsign",
             "NEXT_WAVE": "Next Wave",
         }
         return labels.get(str(type_key or "").strip().upper(), "General")
@@ -3399,6 +3457,7 @@ class JS8MeshGUI:
             "STATIONS_ONLY": "JC JRS",
             "HEARD_STATIONS": "JC HR",
             "HEARD_RELAY_CANDIDATE": "JC HRC",
+            "FIND_CALLSIGN": "JC FIND",
         }
         return mapping.get(scope, "JC JR")
 
@@ -3705,7 +3764,7 @@ class JS8MeshGUI:
 
         if type_key != "GENERAL":
             return (
-                f"Request JR: {self._request_jr_type_label(type_key)}\n\n"
+                f"Request Report: {self._request_jr_type_label(type_key)}\n\n"
                 "This request type UI is ready.\n"
                 "Command preview will be added in the next step."
             )
@@ -3715,13 +3774,17 @@ class JS8MeshGUI:
         if target_mode == "GROUP":
             if command_text in ("JC HR", "JC HRC"):
                 return f"{command_text} requests must be sent to a recipient node."
-            return f"@JS8MESH {command_text}"
+            if command_text == "JC FIND" and not hrc_target:
+                return "Enter the target callsign you want other nodes to search for."
+            return f"@JS8MESH {command_text} {hrc_target}".strip()
 
         recipient = normalize_callsign(self.request_jr_window_ui.get_recipient(type_key))
         if not recipient:
             return "Enter a recipient callsign or choose Send to @JS8MESH."
         if command_text == "JC HRC" and not hrc_target:
             return "Enter the target callsign you want the recipient node to check for relay reachability."
+        if command_text == "JC FIND" and not hrc_target:
+            return "Enter the target callsign you want other nodes to search for."
         selected_info = dict(self.request_jr_selected_node_info.get(type_key, {}) or {})
         if normalize_callsign(selected_info.get("callsign", "")) != recipient:
             selected_info = {}
@@ -3786,7 +3849,7 @@ class JS8MeshGUI:
 
     def _send_request_jr_preview_to_js8call(self):
         preview_text = str(self.request_jr_window_ui.get_preview_text() or self.request_jr_preview_var.get() or "").strip()
-        if not preview_text or preview_text.startswith("Enter a recipient") or preview_text.startswith("Set your User Callsign") or preview_text.startswith("Request JR:"):
+        if not preview_text or preview_text.startswith("Enter a recipient") or preview_text.startswith("Set your User Callsign") or preview_text.startswith("Request Report:"):
             self._dark_info_dialog(
                 "Nothing to Send",
                 "There is no valid Request JR command to send yet.",
@@ -3795,11 +3858,51 @@ class JS8MeshGUI:
             )
             return
         target_mode = self._current_request_jr_send_mode()
+        report_scope = self.request_jr_window_ui.get_report_scope()
+        find_target = normalize_callsign(self.request_jr_window_ui.get_hrc_target_callsign())
+        sender = normalize_callsign(self._current_request_jr_sender())
+        frequency_text = self._normalize_frequency_text(self.selected_frequency_var.get()) or str(self.selected_frequency_var.get() or "").strip()
+
+        def _on_find_request_started(_result):
+            if report_scope != "FIND_CALLSIGN" or not find_target or not sender:
+                return
+            target_mode_text = self.request_jr_window_ui.get_target_mode("GENERAL")
+            return_path = ""
+            if target_mode_text == "GROUP":
+                return_path = "@JS8MESH"
+            else:
+                recipient = normalize_callsign(self.request_jr_window_ui.get_recipient("GENERAL"))
+                selected_info = dict(self.request_jr_selected_node_info.get("GENERAL", {}) or {})
+                path_text = str(selected_info.get("path_text", "") or "").strip()
+                if path_text:
+                    return_path = ">".join(
+                        normalize_callsign(part)
+                        for part in path_text.split(">")
+                        if normalize_callsign(part)
+                    )
+                else:
+                    return_path = recipient
+            created_at = self._now().isoformat(timespec="seconds")
+            self._upsert_my_find_search({
+                "event_id": f"MYFIND-{int(time.time() * 1000)}",
+                "find_id": self._find_search_id(sender, find_target, frequency_text),
+                "created_at": created_at,
+                "updated_at": created_at,
+                "requester": sender,
+                "target_callsign": find_target,
+                "frequency": frequency_text,
+                "return_path": return_path,
+                "status": "ACTIVE",
+                "expires_at": self._find_expiry_iso(created_at),
+                "details": "FIND request sent.",
+            })
+
         self._send_text_to_js8call_async(
             text=preview_text,
             target_mode=target_mode,
             settings_key=None,
             parent_window=self.request_jr_window_ui.get_window(),
+            early_success_callback=_on_find_request_started,
         )
 
     def _refresh_request_jr_picker_rows(self):
@@ -4311,6 +4414,442 @@ class JS8MeshGUI:
         ]
         self.hr_log_window.set_rows(rows)
 
+    def _expires_in_text(self, expires_at_text):
+        expires_dt = self._safe_parse_iso_datetime(expires_at_text)
+        if expires_dt is None:
+            return ""
+        delta_seconds = int((expires_dt - self._now()).total_seconds())
+        if delta_seconds <= 0:
+            return "expired"
+        total_minutes = max(1, int((delta_seconds + 59) / 60))
+        hours = total_minutes // 60
+        minutes = total_minutes % 60
+        if hours > 0 and minutes > 0:
+            return f"{hours}h {minutes}m"
+        if hours > 0:
+            return f"{hours}h"
+        return f"{minutes}m"
+
+    def show_my_find_searches_window(self):
+        self.refresh_my_find_searches_window()
+        self.my_find_searches_window.show()
+
+    def show_held_find_searches_window(self):
+        self.refresh_held_find_searches_window()
+        self.held_find_searches_window.show()
+
+    def refresh_my_find_searches_window(self):
+        if getattr(self, "my_find_searches_window", None) is None:
+            return
+        rows = [
+            {
+                "find_id": str(item.get("find_id", "") or ""),
+                "created_at": str(item.get("created_at", item.get("timestamp", "")) or ""),
+                "target_callsign": str(item.get("target_callsign", "") or ""),
+                "requester": str(item.get("requester", "") or ""),
+                "frequency": str(item.get("frequency", "") or ""),
+                "return_path": str(item.get("return_path", "") or ""),
+                "status": str(item.get("status", "") or ""),
+                "expires_in": self._expires_in_text(item.get("expires_at", "")),
+                "details": str(item.get("details", "") or ""),
+            }
+            for item in list(my_find_searches_db)
+        ]
+        self.my_find_searches_window.set_rows(rows)
+
+    def refresh_held_find_searches_window(self):
+        if getattr(self, "held_find_searches_window", None) is None:
+            return
+        rows = [
+            {
+                "find_id": str(item.get("find_id", "") or ""),
+                "created_at": str(item.get("created_at", item.get("timestamp", "")) or ""),
+                "target_callsign": str(item.get("target_callsign", "") or ""),
+                "requester": str(item.get("requester", "") or ""),
+                "frequency": str(item.get("frequency", "") or ""),
+                "return_path": str(item.get("return_path", "") or ""),
+                "status": (
+                    "FOUND - CANCELED TX"
+                    if str(item.get("status", "") or "").strip().upper() == "CANCELED"
+                    else str(item.get("status", "") or "")
+                ),
+                "expires_in": self._expires_in_text(item.get("expires_at", "")),
+                "details": str(item.get("details", "") or ""),
+            }
+            for item in list(held_find_searches_db)
+        ]
+        self.held_find_searches_window.set_rows(rows)
+
+    def clear_my_find_searches_log(self):
+        my_find_searches_db[:] = []
+        save_my_find_searches(my_find_searches_db)
+        self.refresh_my_find_searches_window()
+
+    def clear_held_find_searches_log(self):
+        held_find_searches_db[:] = []
+        save_held_find_searches(held_find_searches_db)
+        self.refresh_held_find_searches_window()
+
+    def send_selected_held_find_search_now(self):
+        window = getattr(self, "held_find_searches_window", None)
+        if window is None:
+            return
+        selected_rows = window.selected_row_dicts()
+        if not selected_rows:
+            self._dark_info_dialog(
+                "Nothing Selected",
+                "Select one held FIND search first.",
+                parent=window.window if window.has_window() else self.root,
+                refocus_widget=window.window if window.has_window() else self.root,
+            )
+            return
+        row = dict(selected_rows[0] or {})
+        target_id = str(row.get("find_id", "")).strip()
+        held_item = None
+        for item in reversed(held_find_searches_db):
+            if str(item.get("find_id", "")).strip() == target_id:
+                held_item = dict(item)
+                break
+        if held_item is None:
+            self._dark_info_dialog(
+                "Missing Entry",
+                "The selected held FIND search could not be found anymore.",
+                parent=window.window if window.has_window() else self.root,
+                refocus_widget=window.window if window.has_window() else self.root,
+            )
+            return
+        self._upsert_held_find_search({
+            "find_id": target_id,
+            "status": "FOUND",
+            "updated_at": self._now().isoformat(timespec="seconds"),
+            "details": "FINDR resend requested manually from Held Find Searches.",
+            "next_attempt_at": "",
+            "send_attempted_at": "",
+        })
+        refreshed = None
+        for item in reversed(held_find_searches_db):
+            if str(item.get("find_id", "")).strip() == target_id:
+                refreshed = dict(item)
+                break
+        if refreshed is not None:
+            self._maybe_send_find_result(refreshed, force=True)
+
+    def _export_find_search_rows_txt(self, path, rows):
+        with open(path, "w", encoding="utf-8") as f:
+            for item in list(rows or []):
+                line = "\t".join(
+                    [
+                        str(item.get("created_at", item.get("timestamp", "")) or ""),
+                        str(item.get("target_callsign", "") or ""),
+                        str(item.get("requester", "") or ""),
+                        str(item.get("frequency", "") or ""),
+                        str(item.get("return_path", "") or ""),
+                        str(item.get("status", "") or ""),
+                        self._expires_in_text(item.get("expires_at", "")),
+                        str(item.get("details", "") or ""),
+                    ]
+                ).rstrip()
+                f.write(line + "\n")
+
+    def _export_find_search_rows_csv(self, path, rows):
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["TIME", "TARGET", "REQUESTER", "FREQ", "RETURN PATH", "STATUS", "EXPIRES IN", "DETAILS"])
+            for item in list(rows or []):
+                writer.writerow([
+                    str(item.get("created_at", item.get("timestamp", "")) or ""),
+                    str(item.get("target_callsign", "") or ""),
+                    str(item.get("requester", "") or ""),
+                    str(item.get("frequency", "") or ""),
+                    str(item.get("return_path", "") or ""),
+                    str(item.get("status", "") or ""),
+                    self._expires_in_text(item.get("expires_at", "")),
+                    str(item.get("details", "") or ""),
+                ])
+
+    def export_my_find_searches_log_txt(self):
+        target_window = self.my_find_searches_window.window if getattr(self, "my_find_searches_window", None) is not None else None
+        path = filedialog.asksaveasfilename(
+            title="Export My Find Searches",
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+        )
+        if not path:
+            self._refocus_window(target_window)
+            return
+        self._export_find_search_rows_txt(path, my_find_searches_db)
+        self._refocus_window(target_window)
+
+    def export_my_find_searches_log_csv(self):
+        target_window = self.my_find_searches_window.window if getattr(self, "my_find_searches_window", None) is not None else None
+        path = filedialog.asksaveasfilename(
+            title="Export My Find Searches",
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        )
+        if not path:
+            self._refocus_window(target_window)
+            return
+        self._export_find_search_rows_csv(path, my_find_searches_db)
+        self._refocus_window(target_window)
+
+    def export_held_find_searches_log_txt(self):
+        target_window = self.held_find_searches_window.window if getattr(self, "held_find_searches_window", None) is not None else None
+        path = filedialog.asksaveasfilename(
+            title="Export Held Find Searches",
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+        )
+        if not path:
+            self._refocus_window(target_window)
+            return
+        self._export_find_search_rows_txt(path, held_find_searches_db)
+        self._refocus_window(target_window)
+
+    def export_held_find_searches_log_csv(self):
+        target_window = self.held_find_searches_window.window if getattr(self, "held_find_searches_window", None) is not None else None
+        path = filedialog.asksaveasfilename(
+            title="Export Held Find Searches",
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        )
+        if not path:
+            self._refocus_window(target_window)
+            return
+        self._export_find_search_rows_csv(path, held_find_searches_db)
+        self._refocus_window(target_window)
+
+    def _append_my_find_search(self, entry):
+        my_find_searches_db.append(dict(entry or {}))
+        save_my_find_searches(my_find_searches_db)
+        if getattr(self, "my_find_searches_window", None) is not None and self.my_find_searches_window.has_window():
+            self.refresh_my_find_searches_window()
+
+    def _append_held_find_search(self, entry):
+        held_find_searches_db.append(dict(entry or {}))
+        save_held_find_searches(held_find_searches_db)
+        if getattr(self, "held_find_searches_window", None) is not None and self.held_find_searches_window.has_window():
+            self.refresh_held_find_searches_window()
+
+    def _save_my_find_searches(self):
+        save_my_find_searches(my_find_searches_db)
+        if getattr(self, "my_find_searches_window", None) is not None and self.my_find_searches_window.has_window():
+            self.refresh_my_find_searches_window()
+
+    def _save_held_find_searches(self):
+        save_held_find_searches(held_find_searches_db)
+        if getattr(self, "held_find_searches_window", None) is not None and self.held_find_searches_window.has_window():
+            self.refresh_held_find_searches_window()
+
+    def _find_search_id(self, requester, target_callsign, frequency):
+        base = "|".join(
+            [
+                normalize_callsign(requester),
+                normalize_callsign(target_callsign),
+                self._normalize_frequency_text(frequency) or str(frequency or "").strip(),
+            ]
+        )
+        return hashlib.sha1(base.encode("utf-8")).hexdigest()[:16].upper()
+
+    def _find_expiry_iso(self, created_at=None):
+        created_dt = self._safe_parse_iso_datetime(created_at) if created_at else None
+        if created_dt is None:
+            created_dt = self._now()
+        return (created_dt + timedelta(hours=FIND_REQUEST_EXPIRY_HOURS)).isoformat(timespec="seconds")
+
+    def _is_find_entry_active(self, entry):
+        expires_dt = self._safe_parse_iso_datetime((entry or {}).get("expires_at", ""))
+        if expires_dt is None:
+            return False
+        return self._now() < expires_dt
+
+    def _find_return_target_via_pathways(self, requester):
+        requester_norm = normalize_callsign(requester)
+        source_station = normalize_callsign(self.user_call_var.get().strip().upper())
+        if not requester_norm or not source_station:
+            return ""
+        frequency_records = self._records_for_selected_frequency()
+        if direct_path_evidence(
+            frequency_records,
+            source_station,
+            requester_norm,
+            max_age_minutes=self._current_max_age_minutes(),
+        ):
+            return requester_norm
+        try:
+            recommendations = recommend_paths(
+                records=frequency_records,
+                user_cs=source_station,
+                target_cs=requester_norm,
+                max_hops=self.max_hops_var.get(),
+                min_snr=self.min_snr_var.get(),
+                max_age_minutes=self._current_max_age_minutes(),
+                reliability_db=reliability_db,
+                classify_callsign=classify_callsign,
+                relay_history_db=relay_history_db,
+            )
+        except Exception:
+            recommendations = []
+        for rec in list(recommendations or []):
+            path_text = str(rec.get("pathway", "") or "").strip()
+            path_parts = [normalize_callsign(part) for part in path_text.split(">") if normalize_callsign(part)]
+            if len(path_parts) >= 2 and path_parts[0] == source_station and path_parts[-1] == requester_norm:
+                return ">".join(path_parts[1:])
+        return ""
+
+    def _current_find_return_target(self, requester, preferred_reply_target, frequency_text):
+        preferred = str(preferred_reply_target or "").strip().upper()
+        if preferred and preferred != "@JS8MESH":
+            return preferred
+        return self._find_return_target_via_pathways(requester)
+
+    def _latest_local_hearing_of_callsign(self, target_callsign, frequency_text, max_age_minutes=None):
+        source_station = normalize_callsign(self.user_call_var.get().strip().upper())
+        target_norm = normalize_callsign(target_callsign)
+        if not source_station or not target_norm:
+            return None
+        effective_max_age = self._current_max_age_minutes() if max_age_minutes is None else max(1, int(max_age_minutes))
+        _user_heard_target, target_heard_user = latest_direct_reports(
+            self._records_for_selected_frequency(),
+            source_station,
+            target_norm,
+            max_age_minutes=effective_max_age,
+        )
+        if not target_heard_user:
+            return None
+        try:
+            snr_value = float(target_heard_user.get("snr", -30.0))
+        except Exception:
+            snr_value = -30.0
+        try:
+            heard_dt = target_heard_user.get("datetime")
+            minutes_ago = max(0, int(round((self._now() - heard_dt).total_seconds() / 60.0))) if heard_dt is not None else 0
+        except Exception:
+            minutes_ago = 0
+        return {
+            "target_callsign": target_norm,
+            "snr": snr_value,
+            "minutes_ago": minutes_ago,
+            "heard_at": self._now().isoformat(timespec="seconds"),
+            "frequency": self._normalize_frequency_text(frequency_text) or str(frequency_text or "").strip(),
+        }
+
+    def _build_findr_payload(self, target_callsign, snr_value, minutes_ago):
+        target_norm = normalize_callsign(target_callsign)
+        if not target_norm:
+            return ""
+        try:
+            snr_text = f"{int(round(float(snr_value))):+d}"
+        except Exception:
+            snr_text = "+0"
+        try:
+            minutes_text = str(max(0, int(round(float(minutes_ago)))))
+        except Exception:
+            minutes_text = "0"
+        return f"FINDR.{target_norm}.{snr_text}.{minutes_text}"
+
+    def _show_find_result_dialog(self, held_entry, preview_text, mode_name):
+        target_callsign = normalize_callsign((held_entry or {}).get("target_callsign", ""))
+        requester = normalize_callsign((held_entry or {}).get("requester", ""))
+        return_target = str((held_entry or {}).get("return_path", "") or "").strip()
+        details = str((held_entry or {}).get("details", "") or "").strip()
+        body_text = (
+            f"Requester: {requester or '-'}\n"
+            f"Target Callsign: {target_callsign or '-'}\n"
+            f"Return Path: {return_target or '-'}\n"
+            f"Mode: {str(mode_name or 'NORMAL').strip().upper()}\n\n"
+            f"Prepared FINDR message:\n{str(preview_text or '').strip()}"
+        )
+        footer_lines = [
+            self._js8call_send_effects_text(mode_name),
+            "",
+            "Press Send to JS8Call to continue or Cancel to leave it pending.",
+        ]
+        if not bool(settings.get("js8call_allow_auto_send", False)):
+            footer_lines.extend([
+                "",
+                "JS8Call Control is OFF. JS8Mesh will load the FINDR text into JS8Call only.",
+            ])
+        if details:
+            footer_lines.extend(["", details])
+        return self._show_send_confirmation_dialog(
+            dialog_title="FIND Result",
+            title_text="JS8Mesh has prepared this FINDR response.",
+            body_text=body_text,
+            footer_text="\n".join(footer_lines).strip(),
+            parent_widget=self.root,
+            confirm_label="Send to JS8Call",
+            cancel_label="Cancel",
+        )
+
+    def _show_find_rebroadcast_dialog(self, held_entry, preview_text, mode_name):
+        target_callsign = normalize_callsign((held_entry or {}).get("target_callsign", ""))
+        requester = normalize_callsign((held_entry or {}).get("requester", ""))
+        details = str((held_entry or {}).get("details", "") or "").strip()
+        body_text = (
+            f"Original requester: {requester or '-'}\n"
+            f"Target callsign: {target_callsign or '-'}\n"
+            f"Send mode: {str(mode_name or 'NORMAL').strip().upper()}\n\n"
+            f"Group rebroadcast ready to send to JS8Call:\n{str(preview_text or '').strip()}"
+        )
+        footer_lines = [
+            self._js8call_send_effects_text(mode_name),
+            "",
+            "Press Send to JS8Call to continue or Cancel to stop this rebroadcast.",
+        ]
+        if not bool(settings.get("js8call_allow_auto_send", False)):
+            footer_lines.extend([
+                "",
+                "JS8Call Control is OFF. JS8Mesh will load the rebroadcast text into JS8Call only.",
+            ])
+        if details:
+            footer_lines.extend(["", details])
+        return self._show_send_confirmation_dialog(
+            dialog_title="FIND Rebroadcast",
+            title_text="JS8Mesh has prepared this delayed @JS8MESH FIND rebroadcast.",
+            body_text=body_text,
+            footer_text="\n".join(footer_lines).strip(),
+            parent_widget=self.root,
+            confirm_label="Send to JS8Call",
+            cancel_label="Cancel",
+        )
+
+    def _upsert_my_find_search(self, entry):
+        new_entry = dict(entry or {})
+        find_id = str(new_entry.get("find_id", "")).strip() or self._find_search_id(
+            new_entry.get("requester", ""),
+            new_entry.get("target_callsign", ""),
+            new_entry.get("frequency", ""),
+        )
+        new_entry["find_id"] = find_id
+        for item in reversed(my_find_searches_db):
+            if str(item.get("find_id", "")).strip() != find_id:
+                continue
+            item.update({k: v for k, v in new_entry.items() if v is not None})
+            self._save_my_find_searches()
+            return dict(item)
+        my_find_searches_db.append(new_entry)
+        self._save_my_find_searches()
+        return dict(new_entry)
+
+    def _upsert_held_find_search(self, entry):
+        new_entry = dict(entry or {})
+        find_id = str(new_entry.get("find_id", "")).strip() or self._find_search_id(
+            new_entry.get("requester", ""),
+            new_entry.get("target_callsign", ""),
+            new_entry.get("frequency", ""),
+        )
+        new_entry["find_id"] = find_id
+        for item in reversed(held_find_searches_db):
+            if str(item.get("find_id", "")).strip() != find_id:
+                continue
+            item.update({k: v for k, v in new_entry.items() if v is not None})
+            self._save_held_find_searches()
+            return dict(item)
+        held_find_searches_db.append(new_entry)
+        self._save_held_find_searches()
+        return dict(new_entry)
+
     def _append_hr_log(self, entry):
         hr_log_db.append(dict(entry or {}))
         save_hr_log(hr_log_db)
@@ -4441,7 +4980,7 @@ class JS8MeshGUI:
     def export_auto_responder_log_txt(self):
         target_window = self.auto_responder_log_window.window if getattr(self, "auto_responder_log_window", None) is not None else None
         path = filedialog.asksaveasfilename(
-            title="Export Requested JR Responds Log",
+            title="Export Requested Report Responds Log",
             defaultextension=".txt",
             filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
         )
@@ -4468,7 +5007,7 @@ class JS8MeshGUI:
     def export_auto_responder_log_csv(self):
         target_window = self.auto_responder_log_window.window if getattr(self, "auto_responder_log_window", None) is not None else None
         path = filedialog.asksaveasfilename(
-            title="Export Requested JR Responds Log",
+            title="Export Requested Report Responds Log",
             defaultextension=".csv",
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
         )
@@ -5123,6 +5662,431 @@ class JS8MeshGUI:
                 return True
         return False
 
+    def _register_pending_find_rebroadcast(self, held_entry):
+        held = dict(held_entry or {})
+        find_id = str(held.get("find_id", "")).strip()
+        due_text = str(held.get("rebroadcast_due_at", "")).strip()
+        if not find_id or not due_text:
+            return
+        self._pending_find_rebroadcasts = [
+            item for item in list(self._pending_find_rebroadcasts or [])
+            if str(item.get("find_id", "")).strip() != find_id
+        ]
+        self._pending_find_rebroadcasts.append({
+            "find_id": find_id,
+            "due_at": due_text,
+        })
+
+    def _cancel_pending_find_rebroadcast(self, find_id):
+        target_id = str(find_id or "").strip()
+        if not target_id:
+            return
+        self._pending_find_rebroadcasts = [
+            item for item in list(self._pending_find_rebroadcasts or [])
+            if str(item.get("find_id", "")).strip() != target_id
+        ]
+
+    def _store_incoming_find_request(self, record, route_info, target_callsign, requester_override=None):
+        requester = normalize_callsign(requester_override or route_info.get("requester", "")) or "UNKNOWN"
+        target_norm = normalize_callsign(target_callsign)
+        frequency_text = self._normalize_frequency_text(record.get("freq", "")) or str(record.get("freq", "")).strip()
+        raw_recipient = str(route_info.get("raw_recipient", str(record.get("to", "")) or "")).strip().upper()
+        is_group = bool(route_info.get("is_group", False))
+        is_relay = bool(route_info.get("is_relay", False))
+        if not target_norm or requester in self._own_known_callsigns():
+            return True
+
+        now_dt = self._now()
+        created_at = now_dt.isoformat(timespec="seconds")
+        expires_at = self._find_expiry_iso(created_at)
+        find_id = self._find_search_id(requester, target_norm, frequency_text)
+        existing = None
+        for item in reversed(held_find_searches_db):
+            if str(item.get("find_id", "")).strip() == find_id:
+                existing = item
+                break
+
+        local_snr = None
+        try:
+            local_snr = float(record.get("snr"))
+        except Exception:
+            local_snr = None
+
+        entry = {
+            "event_id": str(existing.get("event_id", "")).strip() if existing else f"FIND-{int(time.time() * 1000)}",
+            "find_id": find_id,
+            "created_at": str(existing.get("created_at", created_at)).strip() if existing else created_at,
+            "updated_at": created_at,
+            "requester": requester,
+            "target_callsign": target_norm,
+            "frequency": frequency_text,
+            "return_path": str(route_info.get("reply_target", "") or "").strip(),
+            "first_return_hop": str(route_info.get("first_return_hop", "") or "").strip(),
+            "original_recipient": raw_recipient,
+            "request_text": str(record.get("msg", "")).strip(),
+            "is_group": bool(is_group),
+            "is_relay": bool(is_relay),
+            "status": "ACTIVE",
+            "expires_at": expires_at,
+            "best_request_snr": local_snr if local_snr is not None else existing.get("best_request_snr", ""),
+            "details": "Stored FIND request.",
+            "rebroadcast_status": "N/A",
+            "rebroadcast_due_at": "",
+            "rebroadcast_sent_at": str(existing.get("rebroadcast_sent_at", "")).strip() if existing else "",
+            "found_at": str(existing.get("found_at", "")).strip() if existing else "",
+            "found_snr": existing.get("found_snr", "") if existing else "",
+            "found_minutes": existing.get("found_minutes", "") if existing else "",
+            "reply_text": str(existing.get("reply_text", "")).strip() if existing else "",
+            "next_attempt_at": str(existing.get("next_attempt_at", "")).strip() if existing else "",
+        }
+
+        stronger_refresh = False
+        if existing is not None and local_snr is not None:
+            try:
+                previous_snr = float(existing.get("best_request_snr"))
+            except Exception:
+                previous_snr = None
+            if previous_snr is None or local_snr > previous_snr:
+                stronger_refresh = True
+
+        if is_group:
+            delay_seconds = random.randint(10, 60)
+            should_schedule = existing is None or stronger_refresh
+            if should_schedule:
+                due_at = (now_dt + timedelta(seconds=delay_seconds)).isoformat(timespec="seconds")
+                entry["rebroadcast_status"] = "PENDING"
+                entry["rebroadcast_due_at"] = due_at
+                entry["details"] = f"Stored group FIND request. Rebroadcast scheduled in {delay_seconds}s."
+            else:
+                pending_due = str(existing.get("rebroadcast_due_at", "")).strip()
+                pending_sent = str(existing.get("rebroadcast_sent_at", "")).strip()
+                if pending_due and not pending_sent:
+                    entry["rebroadcast_status"] = "CANCELED"
+                    entry["rebroadcast_due_at"] = ""
+                    entry["details"] = "Stored group FIND request. Local rebroadcast canceled because another copy was heard first."
+                else:
+                    entry["rebroadcast_status"] = str(existing.get("rebroadcast_status", "N/A")).strip() or "N/A"
+                    entry["rebroadcast_due_at"] = str(existing.get("rebroadcast_due_at", "")).strip()
+                    entry["details"] = "Stored group FIND request. No new rebroadcast scheduled."
+        else:
+            entry["details"] = "Stored direct FIND request for this node only."
+
+        saved = self._upsert_held_find_search(entry)
+        if str(saved.get("rebroadcast_status", "")).strip().upper() == "PENDING":
+            self._register_pending_find_rebroadcast(saved)
+        else:
+            self._cancel_pending_find_rebroadcast(find_id)
+        self._maybe_refresh_find_search(saved)
+        return True
+
+    def _mark_my_find_result(self, record, target_callsign, snr_value, minutes_ago):
+        target_norm = normalize_callsign(target_callsign)
+        frequency_text = self._normalize_frequency_text(record.get("freq", "")) or str(record.get("freq", "")).strip()
+        sender = normalize_callsign(record.get("from", ""))
+        now_text = self._now().isoformat(timespec="seconds")
+        updated = False
+        for item in reversed(my_find_searches_db):
+            if normalize_callsign(item.get("target_callsign", "")) != target_norm:
+                continue
+            if (self._normalize_frequency_text(item.get("frequency", "")) or str(item.get("frequency", "")).strip()) != frequency_text:
+                continue
+            if not self._is_find_entry_active(item):
+                continue
+            item["status"] = "FOUND"
+            item["updated_at"] = now_text
+            item["found_at"] = now_text
+            item["found_by"] = sender
+            item["found_snr"] = snr_value
+            item["found_minutes"] = minutes_ago
+            item["details"] = f"{sender} reported hearing {target_norm} at {minutes_ago}m / {int(round(float(snr_value))):+d}."
+            updated = True
+            break
+        if updated:
+            self._save_my_find_searches()
+        return updated
+
+    def _maybe_refresh_find_search(self, held_entry):
+        held = dict(held_entry or {})
+        if not self._is_find_entry_active(held):
+            return
+        if str(held.get("status", "")).strip().upper() in ("SENT", "STAGED", "CANCELED"):
+            return
+        hearing = self._latest_local_hearing_of_callsign(
+            held.get("target_callsign", ""),
+            held.get("frequency", ""),
+        )
+        if not hearing:
+            return
+        held["status"] = "FOUND"
+        held["updated_at"] = self._now().isoformat(timespec="seconds")
+        held["found_at"] = hearing.get("heard_at", "")
+        held["found_snr"] = hearing.get("snr", "")
+        held["found_minutes"] = hearing.get("minutes_ago", "")
+        held["details"] = (
+            f"Heard {normalize_callsign(held.get('target_callsign', ''))} locally at "
+            f"{hearing.get('minutes_ago', 0)}m / {int(round(float(hearing.get('snr', 0.0)))):+d}."
+        )
+        held["next_attempt_at"] = held["updated_at"]
+        self._upsert_held_find_search(held)
+
+    def _maybe_send_find_result(self, held_entry, force=False):
+        held = dict(held_entry or {})
+        current_status = str(held.get("status", "")).strip().upper()
+        if current_status in ("SENT", "STAGED"):
+            return
+        if current_status == "CANCELED" and not bool(force):
+            return
+        if not self._is_find_entry_active(held):
+            return
+        found_at = str(held.get("found_at", "")).strip()
+        if not found_at:
+            return
+        next_attempt_dt = self._safe_parse_iso_datetime(held.get("next_attempt_at", ""))
+        if next_attempt_dt is not None and self._now() < next_attempt_dt and not bool(force):
+            return
+        send_attempted_at = str(held.get("send_attempted_at", "")).strip()
+        if send_attempted_at and not bool(force):
+            return
+        requester = normalize_callsign(held.get("requester", ""))
+        return_target = self._current_find_return_target(
+            requester,
+            held.get("return_path", ""),
+            held.get("frequency", ""),
+        )
+        if not return_target:
+            held["status"] = "FOUND"
+            held["details"] = f"Target was heard, but no return path to {requester} is available yet."
+            held["next_attempt_at"] = (self._now() + timedelta(minutes=5)).isoformat(timespec="seconds")
+            self._upsert_held_find_search(held)
+            return
+        payload = self._build_findr_payload(
+            held.get("target_callsign", ""),
+            held.get("found_snr", 0),
+            held.get("found_minutes", 0),
+        )
+        if not payload:
+            return
+        full_text = f"{return_target} {payload}".strip()
+        first_hop = normalize_callsign(return_target.split(">")[0]) if ">" in return_target else normalize_callsign(return_target)
+        send_mode = self._request_jr_mode_for_first_hop(first_hop) if first_hop else "NORMAL"
+        if send_mode == "SLOW":
+            held["status"] = "FOUND"
+            held["details"] = "Target was heard, but the available return path currently falls to SLOW."
+            held["next_attempt_at"] = (self._now() + timedelta(minutes=5)).isoformat(timespec="seconds")
+            self._upsert_held_find_search(held)
+            return
+        held["reply_text"] = full_text
+        held["details"] = f"Prepared FINDR back to {return_target}."
+        held["send_attempted_at"] = self._now().isoformat(timespec="seconds")
+        self._upsert_held_find_search(held)
+
+        should_send = self._show_find_result_dialog(held, full_text, send_mode)
+        if not should_send:
+            self._upsert_held_find_search({
+                "find_id": held.get("find_id", ""),
+                "status": "CANCELED",
+                "updated_at": self._now().isoformat(timespec="seconds"),
+                "details": "FINDR was canceled by the user. Use Held Find Searches > Send Selected Now to send it later.",
+                "next_attempt_at": "",
+                "send_attempted_at": self._now().isoformat(timespec="seconds"),
+                "reply_text": full_text,
+            })
+            return
+
+        def _on_find_send_started(_result):
+            self._upsert_held_find_search({
+                "find_id": held.get("find_id", ""),
+                "updated_at": self._now().isoformat(timespec="seconds"),
+                "reply_text": full_text,
+                "details": f"Sending FINDR to {return_target}...",
+            })
+
+        def _on_find_send_success(result):
+            if bool(result.get("manual_send_only")):
+                self._upsert_held_find_search({
+                    "find_id": held.get("find_id", ""),
+                    "status": "STAGED",
+                    "updated_at": self._now().isoformat(timespec="seconds"),
+                    "reply_text": full_text,
+                    "details": "FINDR was loaded into JS8Call only. JS8Call Control is OFF.",
+                    "next_attempt_at": "",
+                    "send_attempted_at": self._now().isoformat(timespec="seconds"),
+                })
+            else:
+                self._upsert_held_find_search({
+                    "find_id": held.get("find_id", ""),
+                    "status": "SENT",
+                    "updated_at": self._now().isoformat(timespec="seconds"),
+                    "reply_text": full_text,
+                    "details": (
+                        f"FINDR sent to {return_target} and transmission completed cleanly."
+                        if bool(result.get("tx_completed"))
+                        else f"FINDR was handed to JS8Call for {return_target}, but JS8Mesh could not confirm a clean TX finish."
+                    ),
+                    "next_attempt_at": "",
+                    "send_attempted_at": self._now().isoformat(timespec="seconds"),
+                })
+
+        def _on_find_send_error(error_text):
+            self._upsert_held_find_search({
+                "find_id": held.get("find_id", ""),
+                "status": "FOUND",
+                "updated_at": self._now().isoformat(timespec="seconds"),
+                "details": f"FINDR send failed: {error_text}",
+                "next_attempt_at": (self._now() + timedelta(minutes=5)).isoformat(timespec="seconds"),
+                "send_attempted_at": "",
+                "reply_text": full_text,
+            })
+
+        self._send_text_to_js8call_async(
+            text=full_text,
+            target_mode=send_mode,
+            settings_key=None,
+            parent_window=self.root,
+            early_success_callback=_on_find_send_started,
+            success_callback=_on_find_send_success,
+            error_callback=_on_find_send_error,
+        )
+
+    def _send_group_find_rebroadcast(self, held_entry):
+        held = dict(held_entry or {})
+        if not self._is_find_entry_active(held):
+            return
+        if not bool(held.get("is_group", False)):
+            return
+        requester = normalize_callsign(held.get("requester", ""))
+        target_callsign = normalize_callsign(held.get("target_callsign", ""))
+        payload = f"@JS8MESH JC FIND {requester} {target_callsign}".strip()
+        if not requester or not target_callsign:
+            return
+        self._upsert_held_find_search({
+            "find_id": held.get("find_id", ""),
+            "rebroadcast_status": "READY",
+            "updated_at": self._now().isoformat(timespec="seconds"),
+            "details": "Prepared delayed group FIND rebroadcast.",
+        })
+        should_send = self._show_find_rebroadcast_dialog(held, payload, "NORMAL")
+        if not should_send:
+            self._upsert_held_find_search({
+                "find_id": held.get("find_id", ""),
+                "rebroadcast_status": "CANCELED",
+                "updated_at": self._now().isoformat(timespec="seconds"),
+                "details": "Delayed group FIND rebroadcast was canceled by the user.",
+                "rebroadcast_due_at": "",
+            })
+            self._cancel_pending_find_rebroadcast(held.get("find_id", ""))
+            return
+        self._upsert_held_find_search({
+            "find_id": held.get("find_id", ""),
+            "rebroadcast_status": "SENDING",
+            "updated_at": self._now().isoformat(timespec="seconds"),
+            "details": "Sending group FIND rebroadcast.",
+        })
+
+        def _on_rebroadcast_started(_result):
+            self._upsert_held_find_search({
+                "find_id": held.get("find_id", ""),
+                "updated_at": self._now().isoformat(timespec="seconds"),
+                "details": "Sending group FIND rebroadcast.",
+            })
+
+        def _on_rebroadcast_success(result):
+            if bool(result.get("manual_send_only")):
+                self._upsert_held_find_search({
+                    "find_id": held.get("find_id", ""),
+                    "rebroadcast_status": "STAGED",
+                    "rebroadcast_due_at": "",
+                    "updated_at": self._now().isoformat(timespec="seconds"),
+                    "details": "Group FIND rebroadcast was loaded into JS8Call only. JS8Call Control is OFF.",
+                })
+            else:
+                self._upsert_held_find_search({
+                    "find_id": held.get("find_id", ""),
+                    "rebroadcast_status": "SENT",
+                    "rebroadcast_sent_at": self._now().isoformat(timespec="seconds"),
+                    "rebroadcast_due_at": "",
+                    "updated_at": self._now().isoformat(timespec="seconds"),
+                    "details": (
+                        "Group FIND rebroadcast sent and transmission completed cleanly."
+                        if bool(result.get("tx_completed"))
+                        else "Group FIND rebroadcast was handed to JS8Call, but JS8Mesh could not confirm a clean TX finish."
+                    ),
+                })
+            self._cancel_pending_find_rebroadcast(held.get("find_id", ""))
+
+        def _on_rebroadcast_error(error_text):
+            self._upsert_held_find_search({
+                "find_id": held.get("find_id", ""),
+                "rebroadcast_status": "FAILED",
+                "updated_at": self._now().isoformat(timespec="seconds"),
+                "details": f"Group FIND rebroadcast failed: {error_text}",
+                "rebroadcast_due_at": (self._now() + timedelta(minutes=5)).isoformat(timespec="seconds"),
+            })
+            self._register_pending_find_rebroadcast({
+                "find_id": held.get("find_id", ""),
+                "rebroadcast_due_at": (self._now() + timedelta(minutes=5)).isoformat(timespec="seconds"),
+            })
+
+        self._send_text_to_js8call_async(
+            text=payload,
+            target_mode="NORMAL",
+            settings_key=None,
+            parent_window=self.root,
+            early_success_callback=_on_rebroadcast_started,
+            success_callback=_on_rebroadcast_success,
+            error_callback=_on_rebroadcast_error,
+        )
+
+    def _find_search_tick(self):
+        try:
+            self._find_tick_running = True
+            now_dt = self._now()
+            for item in list(my_find_searches_db):
+                if str(item.get("status", "")).strip().upper() == "EXPIRED":
+                    continue
+                expires_dt = self._safe_parse_iso_datetime(item.get("expires_at", ""))
+                if expires_dt is not None and now_dt >= expires_dt:
+                    item["status"] = "EXPIRED"
+                    item["updated_at"] = now_dt.isoformat(timespec="seconds")
+                    item["details"] = "Search expired after 24 hours."
+            self._save_my_find_searches()
+
+            for item in list(held_find_searches_db):
+                if str(item.get("status", "")).strip().upper() == "EXPIRED":
+                    continue
+                expires_dt = self._safe_parse_iso_datetime(item.get("expires_at", ""))
+                if expires_dt is not None and now_dt >= expires_dt:
+                    item["status"] = "EXPIRED"
+                    item["updated_at"] = now_dt.isoformat(timespec="seconds")
+                    item["details"] = "Held search expired after 24 hours."
+                    self._cancel_pending_find_rebroadcast(item.get("find_id", ""))
+                    continue
+                self._maybe_refresh_find_search(item)
+                self._maybe_send_find_result(item)
+
+            pending_remaining = []
+            for item in list(self._pending_find_rebroadcasts or []):
+                due_dt = self._safe_parse_iso_datetime(item.get("due_at", ""))
+                if due_dt is None or now_dt < due_dt:
+                    pending_remaining.append(item)
+                    continue
+                target_id = str(item.get("find_id", "")).strip()
+                held_item = None
+                for candidate in reversed(held_find_searches_db):
+                    if str(candidate.get("find_id", "")).strip() == target_id:
+                        held_item = dict(candidate)
+                        break
+                if held_item is None:
+                    continue
+                if str(held_item.get("rebroadcast_status", "")).strip().upper() != "PENDING":
+                    continue
+                self._send_group_find_rebroadcast(held_item)
+            self._pending_find_rebroadcasts = pending_remaining
+            self._save_held_find_searches()
+        finally:
+            self._find_tick_running = False
+            self.root.after(1000, self._find_search_tick)
+
     def _generate_requested_jr_reply(self, requested_kind, requester, reply_target, mode_name):
         station_count = self._safe_positive_int(
             settings.get("mesh_station_count", 5),
@@ -5417,7 +6381,7 @@ class JS8MeshGUI:
                 "reply_text": "",
                 "speed": effective_mode,
                 "status": "SKIPPED",
-                "reason": "Skipped: no JR can be generated at the moment.",
+                    "reason": "Skipped: no Report can be generated at the moment.",
             })
             return True
 
@@ -5949,7 +6913,7 @@ class JS8MeshGUI:
             )
             if not lines:
                 if self.requested_jr_hr_limit_blocked:
-                    preview_text = "No HR reply fits within the JR/HR TX time limit at this speed."
+                    preview_text = "No HR reply fits within the Report TX time limit at this speed."
                 else:
                     preview_text = "No HR can be generated at the moment."
         elif kind_key == "CAN_RELAY_TO_CALLSIGN":
@@ -5959,9 +6923,9 @@ class JS8MeshGUI:
             )
             if not lines:
                 if self.requested_jr_requested_target_callsign:
-                    preview_text = f"No JR can be generated about {self.requested_jr_requested_target_callsign} at the moment."
+                    preview_text = f"No Report can be generated about {self.requested_jr_requested_target_callsign} at the moment."
                 else:
-                    preview_text = "No JR can be generated at the moment."
+                    preview_text = "No Report can be generated at the moment."
         else:
             lines, preview_text = self._build_mesh_preview_data(
                 station_count=station_count,
@@ -5975,15 +6939,15 @@ class JS8MeshGUI:
                 target_callsign=None,
                 target_prefix=self.requested_jr_reply_target or requester or "@JS8MESH",
             )
-            self._append_auto_responder_debug(
-                "Requested JR preview generated: "
-                f"kind={kind_key} requester={requester} reply_target={self.requested_jr_reply_target or requester or ''} "
-                f"lookback={lookback_minutes} mode={self._current_requested_jr_send_mode()} "
-                f"default_mode={self._requested_jr_default_mode()} lines_count={len(lines)} "
-                f"preview='{str(preview_text or '')[:200]}'"
-            )
-            if not lines:
-                preview_text = "No JR can be generated at the moment."
+        self._append_auto_responder_debug(
+            "Requested Report preview generated: "
+            f"kind={kind_key} requester={requester} reply_target={self.requested_jr_reply_target or requester or ''} "
+            f"lookback={lookback_minutes} mode={self._current_requested_jr_send_mode()} "
+            f"default_mode={self._requested_jr_default_mode()} lines_count={len(lines)} "
+            f"preview='{str(preview_text or '')[:200]}'"
+        )
+        if not lines:
+            preview_text = "No Report can be generated at the moment."
         try:
             preview_widget.configure(text=preview_text)
         except Exception:
@@ -6003,7 +6967,7 @@ class JS8MeshGUI:
             self.requested_jr_estimated_tx_var.set(f"Estimated TX Time: {format_duration(seconds)}")
         else:
             if kind_key == "HEARD_4_STATIONS" and self.requested_jr_hr_limit_blocked:
-                self.requested_jr_estimated_tx_var.set("Estimated TX Time: exceeds JR/HR TX time limit at this speed")
+                self.requested_jr_estimated_tx_var.set("Estimated TX Time: exceeds Report TX time limit at this speed")
             else:
                 self.requested_jr_estimated_tx_var.set("Estimated TX Time: n/a")
         return preview_text, lines
@@ -6018,6 +6982,8 @@ class JS8MeshGUI:
             return "HRC"
         if kind_text == "HEARD 4 STATIONS":
             return "HR"
+        if kind_text == "FIND CALLSIGN":
+            return "FIND"
         return "JR"
 
     def _append_requested_jr_response_log(self, preview_text, speed, status, reason, event_id=None):
@@ -6062,7 +7028,7 @@ class JS8MeshGUI:
             self.requested_jr_lookback_entry = None
 
         dialog = tk.Toplevel(self.root)
-        dialog.title("Requested JR")
+        dialog.title("Requested Report")
         dialog.configure(bg=self.bg_color)
         dialog.resizable(False, False)
         dialog.transient(self.root)
@@ -6076,7 +7042,7 @@ class JS8MeshGUI:
 
         tk.Label(
             header,
-            text="Requested JR:",
+            text="Requested Report:",
             bg=self.bg_color,
             fg="#ff4444",
             anchor="w",
@@ -6229,7 +7195,7 @@ class JS8MeshGUI:
 
         preview_frame = tk.LabelFrame(
             outer,
-            text="Requested JR Preview",
+            text="Requested Report Preview",
             bg=self.bg_color,
             fg=self.fg_color,
             padx=10,
@@ -6273,7 +7239,7 @@ class JS8MeshGUI:
             effective_mode = self._current_requested_jr_send_mode()
             if selected_mode == "DEFAULT" and effective_mode == "SLOW":
                 self._dark_info_dialog(
-                    "Requested JR Default Speed",
+                "Requested Report Default Speed",
                     (
                         "The default speed for this report was calculated as SLOW.\n\n"
                         "Transmission has been aborted.\n\n"
@@ -6288,7 +7254,7 @@ class JS8MeshGUI:
                 self._update_auto_responder_log_status(
                     log_event_id,
                     "QUEUED",
-                    "Requested JR response queued for send to JS8Call.",
+                    "Requested Report response queued for send to JS8Call.",
                     reply_text=preview_text_value,
                 )
             else:
@@ -6296,7 +7262,7 @@ class JS8MeshGUI:
                     preview_text=preview_text_value,
                     speed=effective_mode,
                     status="QUEUED",
-                    reason="Requested JR response queued for send to JS8Call.",
+                    reason="Requested Report response queued for send to JS8Call.",
                 )
             hr_event_id = str(self.requested_jr_hr_log_event_id or "").strip()
             if hr_event_id:
@@ -6317,7 +7283,7 @@ class JS8MeshGUI:
                     self._update_auto_responder_log_status(
                         log_event_id,
                         "STAGED",
-                        "Requested JR response was loaded into JS8Call only. JS8Call Control is OFF.",
+                        "Requested Report response was loaded into JS8Call only. JS8Call Control is OFF.",
                     )
                     if hr_event_id:
                         self._update_hr_log_status(
@@ -6336,7 +7302,7 @@ class JS8MeshGUI:
                     self._update_auto_responder_log_status(
                         log_event_id,
                         "SENT",
-                        "Requested JR response was sent to JS8Call and transmission completed cleanly.",
+                        "Requested Report response was sent to JS8Call and transmission completed cleanly.",
                     )
                     if hr_event_id:
                         self._update_hr_log_status(
@@ -6350,7 +7316,7 @@ class JS8MeshGUI:
                     self._update_auto_responder_log_status(
                         log_event_id,
                         "SENT",
-                        "Requested JR response began transmitting in JS8Call, but JS8Mesh could not confirm that the transmission finished cleanly.",
+                        "Requested Report response began transmitting in JS8Call, but JS8Mesh could not confirm that the transmission finished cleanly.",
                     )
                     if hr_event_id:
                         self._update_hr_log_status(
@@ -6364,7 +7330,7 @@ class JS8MeshGUI:
                     self._update_auto_responder_log_status(
                         log_event_id,
                         "SENT",
-                        "Requested JR response was handed off to JS8Call, but JS8Mesh could not confirm that transmission actually began.",
+                        "Requested Report response was handed off to JS8Call, but JS8Mesh could not confirm that transmission actually began.",
                     )
                     if hr_event_id:
                         self._update_hr_log_status(
@@ -6464,10 +7430,26 @@ class JS8MeshGUI:
             f"freq={self._normalize_frequency_text(record.get('freq', '')) or str(record.get('freq', '')).strip()} "
             f"msg='{str(record.get('msg', '')).strip()}' tokens={command_tokens}"
         )
+        if len(command_tokens) >= 4 and command_tokens[0] == "FINDR":
+            target_callsign = normalize_callsign(command_tokens[1])
+            try:
+                snr_value = float(command_tokens[2])
+            except Exception:
+                snr_value = 0.0
+            try:
+                minutes_ago = max(0, int(command_tokens[3]))
+            except Exception:
+                minutes_ago = 0
+            self._append_auto_responder_debug(
+                f"FINDR parsed: target={target_callsign} snr={snr_value} minutes={minutes_ago}"
+            )
+            self._mark_my_find_result(record, target_callsign, snr_value, minutes_ago)
+            return True
         requested_kind = None
         requested_jr_event_id = ""
         hr_event_id = ""
         hrc_target_callsign = ""
+        find_requester_override = ""
         if command_tokens[:2] == ["JC", "JR"]:
             requested_kind = "General"
         elif command_tokens[:2] == ["JC", "JRN"]:
@@ -6482,6 +7464,17 @@ class JS8MeshGUI:
             if not hrc_target_callsign:
                 self._append_auto_responder_debug("Command ignored: HRC target callsign is missing or invalid.")
                 return True
+        elif len(command_tokens) >= 3 and command_tokens[:2] == ["JC", "FIND"]:
+            requested_kind = "Find Callsign"
+            raw_to_text = str(record.get("to", "") or "").strip().upper()
+            if len(command_tokens) >= 4 and raw_to_text == "@JS8MESH":
+                find_requester_override = normalize_callsign(command_tokens[2])
+                hrc_target_callsign = normalize_callsign(command_tokens[3])
+            else:
+                hrc_target_callsign = normalize_callsign(command_tokens[2])
+            if not hrc_target_callsign:
+                self._append_auto_responder_debug("Command ignored: FIND target callsign is missing or invalid.")
+                return True
         if requested_kind is None:
             return False
         route_info = self._interpret_js8mesh_command_route(record)
@@ -6489,7 +7482,14 @@ class JS8MeshGUI:
         raw_recipient = str(route_info.get("raw_recipient", str(record.get("to", "") or "").strip().upper()) or "").strip().upper()
         reply_target = str(route_info.get("reply_target", "") or "").strip()
         first_return_hop = str(route_info.get("first_return_hop", requester) or requester).strip().upper()
-        request_type = {"General": "JR", "Nodes Only": "JRN", "Stations Only": "JRS", "Heard 4 Stations": "HR", "Can Relay to Callsign": "HRC"}.get(requested_kind, "JR")
+        request_type = {
+            "General": "JR",
+            "Nodes Only": "JRN",
+            "Stations Only": "JRS",
+            "Heard 4 Stations": "HR",
+            "Can Relay to Callsign": "HRC",
+            "Find Callsign": "FIND",
+        }.get(requested_kind, "JR")
         frequency_text = self._normalize_frequency_text(record.get("freq", "")) or str(record.get("freq", "")).strip()
         self._append_auto_responder_debug(
             f"Command parsed: requester={requester} recipient={raw_recipient} reply_target={reply_target} "
@@ -6499,6 +7499,12 @@ class JS8MeshGUI:
         if not bool(route_info.get("supported", True)):
             reason = str(route_info.get("reason", "") or "Unsupported JC command route.")
             self._append_auto_responder_debug(f"Command ignored: {reason}")
+            return True
+        if requested_kind == "Find Callsign":
+            self._append_auto_responder_debug(
+                f"Handling FIND request: requester={find_requester_override or requester} target={hrc_target_callsign} group={bool(route_info.get('is_group', False))}"
+            )
+            self._store_incoming_find_request(record, route_info, hrc_target_callsign, requester_override=find_requester_override)
             return True
         if requested_kind == "Heard 4 Stations" and bool(route_info.get("is_group", False)):
             self._append_hr_log({
@@ -6588,7 +7594,7 @@ class JS8MeshGUI:
                 self._update_auto_responder_log_status(
                     requested_jr_event_id,
                     "SKIPPED",
-                    str(preview_text or "No JR can be generated at the moment."),
+                    str(preview_text or "No Report can be generated at the moment."),
                 )
             self._close_requested_jr_window()
             if requested_kind == "Heard 4 Stations" and hr_event_id:
@@ -7054,7 +8060,7 @@ class JS8MeshGUI:
         lookback_entry.grid(row=0, column=3, sticky="w", padx=(8, 18), pady=4)
         tk.Label(frame, text="Broadcast interval (minutes):", bg=self.bg_color, fg=self.fg_color).grid(row=1, column=0, sticky="w", pady=4)
         tk.Entry(frame, textvariable=interval_var, width=8).grid(row=1, column=1, sticky="w", padx=(8, 18), pady=4)
-        tk.Label(frame, text="JR/HR TX time limit (minutes):", bg=self.bg_color, fg=self.fg_color).grid(row=1, column=2, sticky="w", pady=4)
+        tk.Label(frame, text="Report TX time limit (minutes):", bg=self.bg_color, fg=self.fg_color).grid(row=1, column=2, sticky="w", pady=4)
 
         limit_row = tk.Frame(frame, bg=self.bg_color)
         limit_row.grid(row=1, column=3, sticky="w", padx=(8, 18), pady=4)

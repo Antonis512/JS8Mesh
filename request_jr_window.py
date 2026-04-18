@@ -337,7 +337,7 @@ class RequestJRWindow:
                 pass
         target_label = frame_info.get("hrc_target_label")
         target_entry = frame_info.get("hrc_target_entry")
-        target_enabled = report_scope == "HEARD_RELAY_CANDIDATE"
+        target_enabled = report_scope in ("HEARD_RELAY_CANDIDATE", "FIND_CALLSIGN")
         if target_label is not None:
             try:
                 target_label.configure(fg=self.fg_color if target_enabled else "#888888")
@@ -670,7 +670,7 @@ class RequestJRWindow:
 
         button_row = tk.Frame(outer, bg=self.bg_color)
         button_row.pack(fill="x", pady=(12, 0))
-        tk.Button(button_row, text="Request JR/HR", command=self._apply_picker_selection, bg=self.highlight_color, fg=self.fg_color, width=12).pack(side="left")
+        tk.Button(button_row, text="Request Report", command=self._apply_picker_selection, bg=self.highlight_color, fg=self.fg_color, width=12).pack(side="left")
         tk.Button(button_row, text="Close", command=self._close_picker_window, bg=self.highlight_color, fg=self.fg_color, width=12).pack(side="left", padx=(8, 0))
 
         dialog.protocol("WM_DELETE_WINDOW", self._close_picker_window)
@@ -723,7 +723,7 @@ class RequestJRWindow:
             return
 
         dialog = tk.Toplevel(self.master)
-        dialog.title("Request JR/HR")
+        dialog.title("Request Report")
         dialog.configure(bg=self.bg_color)
         dialog.resizable(True, True)
         self.window = dialog
@@ -756,6 +756,7 @@ class RequestJRWindow:
                 ("STATIONS_ONLY", "Stations Only"),
                 ("HEARD_STATIONS", "Heard 4 Stations"),
                 ("HEARD_RELAY_CANDIDATE", "Can Relay to Callsign"),
+                ("FIND_CALLSIGN", "Find Callsign"),
             ):
                 tk.Radiobutton(
                     scope_row,
@@ -821,7 +822,7 @@ class RequestJRWindow:
             hrc_row.pack(fill="x", pady=(8, 0))
             hrc_target_label = tk.Label(
                 hrc_row,
-                text="Target Callsign for HRC:",
+                text="Target Callsign for HRC/FIND:",
                 bg=self.bg_color,
                 fg="#888888",
             )
