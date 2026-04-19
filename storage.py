@@ -73,6 +73,8 @@ SNR_REPORTS_FILE = _storage_path("snr_reports.json")
 AUTO_RESPONDER_LOG_FILE = _storage_path("auto_responder_log.json")
 TX_MESH_REPORTS_LOG_FILE = _storage_path("tx_mesh_reports_log.json")
 HR_LOG_FILE = _storage_path("hr_log.json")
+MY_FIND_SEARCHES_FILE = _storage_path("my_find_searches.json")
+HELD_FIND_SEARCHES_FILE = _storage_path("held_find_searches.json")
 BUILD_INFO_FILE = _storage_path("_build_info.json")
 
 default_settings = {
@@ -148,6 +150,8 @@ def _reset_portable_storage_for_new_build():
         "auto_responder_log.json",
         "tx_mesh_reports_log.json",
         "hr_log.json",
+        "my_find_searches.json",
+        "held_find_searches.json",
     ):
         try:
             path = _storage_path(filename)
@@ -220,6 +224,8 @@ snr_reports_db = load_json_or_default(SNR_REPORTS_FILE, [])
 auto_responder_log_db = load_json_or_default(AUTO_RESPONDER_LOG_FILE, [])
 tx_mesh_reports_log_db = load_json_or_default(TX_MESH_REPORTS_LOG_FILE, [])
 hr_log_db = load_json_or_default(HR_LOG_FILE, [])
+my_find_searches_db = load_json_or_default(MY_FIND_SEARCHES_FILE, [])
+held_find_searches_db = load_json_or_default(HELD_FIND_SEARCHES_FILE, [])
 
 
 def _safe_parse_iso_datetime(value):
@@ -314,6 +320,24 @@ def prune_retained_logs():
         hr_log_db[:] = pruned_hr_log
         changed_any = True
 
+    pruned_my_find_searches, my_find_changed = _prune_list_entries_older_than(
+        my_find_searches_db,
+        cutoff_dt,
+        ("created_at", "timestamp", "updated_at", "expires_at", "found_at"),
+    )
+    if my_find_changed:
+        my_find_searches_db[:] = pruned_my_find_searches
+        changed_any = True
+
+    pruned_held_find_searches, held_find_changed = _prune_list_entries_older_than(
+        held_find_searches_db,
+        cutoff_dt,
+        ("created_at", "timestamp", "updated_at", "expires_at", "found_at"),
+    )
+    if held_find_changed:
+        held_find_searches_db[:] = pruned_held_find_searches
+        changed_any = True
+
     settings["log_retention_last_pruned_at"] = now_dt.isoformat(timespec="seconds")
     save_settings(settings)
 
@@ -322,6 +346,8 @@ def prune_retained_logs():
         save_auto_responder_log(auto_responder_log_db)
         save_tx_mesh_reports_log(tx_mesh_reports_log_db)
         save_hr_log(hr_log_db)
+        save_my_find_searches(my_find_searches_db)
+        save_held_find_searches(held_find_searches_db)
     return changed_any
 
 
@@ -363,3 +389,13 @@ def save_auto_responder_log(auto_responder_log_list):
 def save_tx_mesh_reports_log(tx_mesh_reports_log_list):
     with open(TX_MESH_REPORTS_LOG_FILE, "w", encoding="utf-8") as f:
         json.dump(tx_mesh_reports_log_list, f, indent=4)
+
+
+def save_my_find_searches(my_find_searches_list):
+    with open(MY_FIND_SEARCHES_FILE, "w", encoding="utf-8") as f:
+        json.dump(my_find_searches_list, f, indent=4)
+
+
+def save_held_find_searches(held_find_searches_list):
+    with open(HELD_FIND_SEARCHES_FILE, "w", encoding="utf-8") as f:
+        json.dump(held_find_searches_list, f, indent=4)
