@@ -508,10 +508,11 @@ class JS8MeshGUI:
         self._ensure_root_visible_normal()
         self._handle_startup_log_retention()
         self._handle_startup_raw_activity_retention()
-        self._initialize_directed_tail()
         self.records = self._load_records_from_storage()
         self.processed = self._load_processed_lines_from_storage()
         self.record_keys = {self._record_key(r) for r in self.records}
+        self._bootstrap_records_from_directed_if_needed()
+        self._initialize_directed_tail()
         self._refresh_current_pathway_view()
         self.refresh_topology_window()
         self._start_background_loops_once()
@@ -711,6 +712,28 @@ class JS8MeshGUI:
 
         return processed
 
+    def _bootstrap_records_from_directed_if_needed(self):
+        if not self.directed_file or not os.path.exists(self.directed_file):
+            return
+
+        added_count = 0
+        try:
+            with open(self.directed_file, encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    parsed = parse_directed_line(line)
+                    if not parsed:
+                        continue
+                    classify_callsign(parsed["from"])
+                    classify_callsign(parsed["to"])
+                    if self._append_record(parsed, source_line=line, save_immediately=False):
+                        added_count += 1
+        except Exception:
+            return
+
+        if added_count > 0:
+            self._sort_records_and_storage(save_immediately=False)
+            save_snr_reports(snr_reports_db)
+
     def _on_root_close(self):
         try:
             if hasattr(self, "selected_frequency_var"):
@@ -811,6 +834,36 @@ class JS8MeshGUI:
             out.append(record)
 
         return out
+
+    def _record_sort_key(self, record):
+        dt = record.get("datetime")
+        if dt is not None:
+            return (
+                dt,
+                str(record.get("from", "") or ""),
+                str(record.get("to", "") or ""),
+                str(record.get("msg", "") or ""),
+                str(record.get("freq", "") or ""),
+                str(record.get("snr", "") or ""),
+            )
+        return (
+            datetime.min,
+            str(record.get("date", "") or ""),
+            str(record.get("time", "") or ""),
+            str(record.get("from", "") or ""),
+            str(record.get("to", "") or ""),
+            str(record.get("msg", "") or ""),
+        )
+
+    def _sort_records_and_storage(self, save_immediately=False):
+        self.records = sorted(list(self.records or []), key=self._record_sort_key)
+        self.record_keys = {self._record_key(r) for r in self.records}
+        snr_reports_db[:] = [
+            self._record_to_storage(record, source_line=str(record.get("source_line", "") or ""))
+            for record in self.records
+        ]
+        if save_immediately:
+            save_snr_reports(snr_reports_db)
 
     def _jr_speed_cache_key(self, sender, destination, payload, freq_text):
         return (
@@ -9023,6 +9076,7 @@ class JS8MeshGUI:
                 added_count += 1
 
         if added_count > 0:
+            self._sort_records_and_storage(save_immediately=False)
             save_snr_reports(snr_reports_db)
             self.rebuild_activity_window_from_records()
             self._refresh_current_pathway_view()
@@ -10385,7 +10439,9 @@ class JS8MeshGUI:
             self._maybe_process_ack_record(parsed)
 
         if added_count > 0:
+            self._sort_records_and_storage(save_immediately=False)
             save_snr_reports(snr_reports_db)
+            self.rebuild_activity_window_from_records()
             self._refresh_current_pathway_view()
             self.refresh_topology_window()
             if getattr(self, "relay_profiles_window", None) is not None and self.relay_profiles_window.has_window():
