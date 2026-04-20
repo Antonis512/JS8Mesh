@@ -1,6 +1,7 @@
 import re
 from datetime import datetime
 from mesh_tx_estimator import estimate_mesh_report_seconds, normalize_mesh_mode
+from time_utils import utc_now_naive
 
 
 JM_FULL_PATTERN = re.compile(
@@ -27,7 +28,7 @@ def _minutes_ago(dt_value, now=None):
         return None
 
     if now is None:
-        now = datetime.now()
+        now = utc_now_naive()
 
     minutes = int((now - dt_value).total_seconds() / 60.0)
     if minutes < 0:
@@ -285,7 +286,7 @@ def mesh_report_sender_speed(record):
 
 def mesh_report_entry_effective_minutes(record, parsed_entry, now=None):
     if now is None:
-        now = datetime.now()
+        now = utc_now_naive()
 
     dt_value = record.get("datetime")
     base_age = _minutes_ago(dt_value, now=now)
@@ -319,7 +320,7 @@ def _is_mesh_report_message(msg_text):
 
 def build_topology_debug_snapshot(records, max_age_minutes=1440, frequency=None, now=None):
     if now is None:
-        now = datetime.now()
+        now = utc_now_naive()
 
     debug = {
         "records_total": len(records),
@@ -380,7 +381,7 @@ def build_topology_debug_snapshot(records, max_age_minutes=1440, frequency=None,
 
 def build_hearing_graph(records, max_age_minutes=1440, frequency=None, now=None):
     if now is None:
-        now = datetime.now()
+        now = utc_now_naive()
 
     graph = {}
 
@@ -441,7 +442,7 @@ def build_hearing_graph(records, max_age_minutes=1440, frequency=None, now=None)
 
 def build_station_summary(records, max_age_minutes=1440, frequency=None, now=None, exclude_callsigns=None):
     if now is None:
-        now = datetime.now()
+        now = utc_now_naive()
     exclude_norms = {_normalize_callsign(item) for item in (exclude_callsigns or []) if _normalize_callsign(item)}
 
     summary = {}
@@ -667,7 +668,7 @@ def _build_mesh_topology_from_reports(
     exclude_callsigns=None,
 ):
     if now is None:
-        now = datetime.now()
+        now = utc_now_naive()
     exclude_norms = {_normalize_callsign(item) for item in (exclude_callsigns or []) if _normalize_callsign(item)}
 
     node_map = {}
@@ -911,7 +912,7 @@ def export_dual_topology_snapshot(
     exclude_callsigns=None,
 ):
     if now is None:
-        now = datetime.now()
+        now = utc_now_naive()
 
     traffic_graph = build_hearing_graph(
         records=records,

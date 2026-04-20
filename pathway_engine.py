@@ -2,6 +2,7 @@ import re
 from datetime import datetime
 from callsign_utils import normalize_callsign
 from topology_engine import parse_mesh_report_entries, mesh_report_entry_effective_minutes
+from time_utils import utc_now_naive
 
 
 CATEGORY_RANK = {
@@ -243,7 +244,7 @@ def _effective_hearing_observations(records, max_age_minutes=65, user_cs=""):
                  hearing: SOURCE heard HEARD
                  send direction supported: HEARD -> SOURCE
     """
-    now = datetime.now()
+    now = utc_now_naive()
     user_display = str(user_cs or "").strip().upper()
     user_norm = normalize_callsign(user_display)
 
@@ -1075,7 +1076,7 @@ def _rf_visibility_label(score):
 
 def compute_station_operational_profiles(records, reliability_db=None, selected_frequency="ALL", user_callsign="", now=None, **_kwargs):
     if now is None:
-        now = datetime.now()
+        now = utc_now_naive()
     reliability_db = dict(reliability_db or {})
     user_norm = normalize_callsign(user_callsign)
     profiles = {}

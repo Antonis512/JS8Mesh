@@ -66,6 +66,7 @@ from pathway_evidence_window import PathwayEvidenceWindow
 from relay_profiles_window import RelayProfilesWindow
 from mesh_tx_estimator import estimate_mesh_report_seconds, format_duration, normalize_mesh_mode, MODE_SECONDS
 from js8call_bridge import JS8CallBridge, JS8CallBridgeError, normalize_incoming_speed_name
+from time_utils import utc_now_naive
 
 from pathway_engine import (
     recommend_paths,
@@ -1175,7 +1176,7 @@ class JS8MeshGUI:
         if dt is None:
             return 0
 
-        minutes = int((datetime.now() - dt).total_seconds() / 60.0)
+        minutes = int((self._record_now() - dt).total_seconds() / 60.0)
 
         if minutes < 0:
             minutes = 0
@@ -3623,7 +3624,7 @@ class JS8MeshGUI:
             mesh_activity_minutes=self._current_mesh_activity_minutes(),
             mesh_core_threshold=self._current_mesh_core_threshold(),
             frequency=selected_frequency,
-            now=datetime.now(),
+            now=self._record_now(),
             exclude_callsigns=self._own_known_callsigns(),
         )
         mesh_nodes = [
@@ -3764,7 +3765,7 @@ class JS8MeshGUI:
                     effective_minutes = mesh_report_entry_effective_minutes(
                         report.get("record", {}),
                         entry,
-                        now=datetime.now(),
+                        now=self._record_now(),
                     )
                     if (
                         not bool(ignore_freshness)
@@ -5286,7 +5287,7 @@ class JS8MeshGUI:
             records=records_for_mesh,
             max_age_minutes=max_age_minutes,
             frequency=selected_frequency,
-            now=datetime.now(),
+            now=self._record_now(),
         )
 
         dual_snapshot = export_dual_topology_snapshot(
@@ -5295,7 +5296,7 @@ class JS8MeshGUI:
             mesh_activity_minutes=self._current_mesh_activity_minutes(),
             mesh_core_threshold=self._current_mesh_core_threshold(),
             frequency=selected_frequency,
-            now=datetime.now(),
+            now=self._record_now(),
             exclude_callsigns=self._own_known_callsigns(),
         )
 
@@ -5362,7 +5363,7 @@ class JS8MeshGUI:
     # ------------------------------------------------
 
     def _mesh_station_summaries(self, lookback_minutes):
-        now = datetime.now()
+        now = self._record_now()
         own_callsign = self.user_call_var.get().strip().upper()
         summaries = {}
 
@@ -5435,7 +5436,7 @@ class JS8MeshGUI:
             mesh_activity_minutes=self._current_mesh_activity_minutes(),
             mesh_core_threshold=self._current_mesh_core_threshold(),
             frequency=selected_frequency,
-            now=datetime.now(),
+            now=self._record_now(),
             exclude_callsigns=self._own_known_callsigns(),
         )
         wave_node_calls = {
@@ -7784,7 +7785,7 @@ class JS8MeshGUI:
             mesh_activity_minutes=self._current_mesh_activity_minutes(),
             mesh_core_threshold=self._current_mesh_core_threshold(),
             frequency=selected_frequency,
-            now=datetime.now(),
+            now=self._record_now(),
             exclude_callsigns=self._own_known_callsigns(),
         )
         wave_node_calls = {
@@ -9214,6 +9215,9 @@ class JS8MeshGUI:
 
     def _now(self):
         return datetime.now()
+
+    def _record_now(self):
+        return utc_now_naive()
 
     def _minutes_ago_from_iso(self, iso_text):
         dt = self._safe_parse_iso_datetime(iso_text)
