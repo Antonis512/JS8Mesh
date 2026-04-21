@@ -992,6 +992,13 @@ def export_dual_topology_snapshot(
                 node["activity"] = station.get("heard_count", 0)
             if not node.get("seen_count"):
                 node["seen_count"] = station.get("heard_count", 0)
+            # Directly heard stations and nodes are always wave 1 relative to the
+            # local operator, even if report evidence also places them deeper.
+            current_wave = node.get("wave_depth")
+            if current_wave is None or int(current_wave) > 1:
+                node["wave_depth"] = 1
+                node["parent_node"] = ""
+                node["path_text"] = ""
             continue
 
         mesh_node_map[callsign] = {
@@ -1003,7 +1010,7 @@ def export_dual_topology_snapshot(
             "latest_minutes_ago": station.get("latest_minutes_ago"),
             "neighbor_count": station.get("neighbor_count", 0),
             "mesh_role": "observed_only",
-            "wave_depth": None,
+            "wave_depth": 1,
             "parent_node": "",
             "path_text": "",
             "mesh_report_count_total": 0,

@@ -97,7 +97,7 @@ from topology_engine import (
 class JS8MeshGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("JS8Mesh v0.10.0-beta by SV8TTL, 18SV8110")
+        self.root.title("JS8Mesh v0.10.2-beta by SV8TTL, 18SV8110")
 
         self.bg_color = "#222222"
         self.fg_color = "#ffffff"
@@ -3179,7 +3179,7 @@ class JS8MeshGUI:
 
     def show_about(self):
         about = tk.Toplevel(self.root)
-        about.title("About JS8Mesh v0.10.0-beta")
+        about.title("About JS8Mesh v0.10.2-beta")
         about.configure(bg=self.bg_color)
 
         outer = tk.Frame(about, bg=self.bg_color, padx=18, pady=18)
@@ -3187,7 +3187,7 @@ class JS8MeshGUI:
 
         tk.Label(
             outer,
-            text="JS8Mesh v0.10.0-beta by SV8TTL, 18SV8110",
+            text="JS8Mesh v0.10.2-beta by SV8TTL, 18SV8110",
             bg=self.bg_color,
             fg=self.fg_color,
             anchor="w",
@@ -5303,10 +5303,29 @@ class JS8MeshGUI:
         traffic_export = dual_snapshot["traffic"]
         mesh_export = dual_snapshot["mesh"]
         mesh_stats = dual_snapshot["mesh_stats"]
+        own_callsigns = self._own_known_callsigns()
+
+        def _filter_topology_nodes_and_edges(nodes, edges):
+            filtered_nodes = [
+                node for node in list(nodes or [])
+                if normalize_callsign(node.get("id", "")) not in own_callsigns
+            ]
+            allowed_ids = {
+                normalize_callsign(node.get("id", ""))
+                for node in filtered_nodes
+                if normalize_callsign(node.get("id", ""))
+            }
+            filtered_edges = [
+                edge for edge in list(edges or [])
+                if normalize_callsign(edge.get("source", "")) in allowed_ids
+                and normalize_callsign(edge.get("target", "")) in allowed_ids
+            ]
+            return filtered_nodes, filtered_edges
 
         if topology_mode == "mesh":
             nodes_to_show = mesh_export["nodes"]
             edges_to_show = mesh_export["edges"]
+            nodes_to_show, edges_to_show = _filter_topology_nodes_and_edges(nodes_to_show, edges_to_show)
             wave_filter = self.topology_window.get_mesh_wave_filter() if self.topology_window is not None else {"mode": "all", "value": None}
             if wave_filter and wave_filter.get("mode") != "all":
                 wave_value = wave_filter.get("value")
@@ -5333,7 +5352,8 @@ class JS8MeshGUI:
         else:
             nodes_to_show = traffic_export["nodes"]
             edges_to_show = traffic_export["edges"]
-            visible_role_text = f"Traffic stations: {len(traffic_export['nodes'])}"
+            nodes_to_show, edges_to_show = _filter_topology_nodes_and_edges(nodes_to_show, edges_to_show)
+            visible_role_text = f"Traffic stations: {len(nodes_to_show)}"
 
         self.topology_window.populate(
             nodes=nodes_to_show,
