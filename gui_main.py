@@ -5484,7 +5484,7 @@ class JS8MeshGUI:
             link = self._mesh_link_info(graph, source_station, heard_norm)
             if not link:
                 continue
-            if str(link.get("category", "")).strip().upper() not in ("TURBO", "FAST"):
+            if str(link.get("category", "")).strip().upper() not in ("TURBO", "FAST", "NORMAL"):
                 continue
             if int(link.get("minutes_ago", 999999) or 999999) > int(lookback_minutes):
                 continue
@@ -7755,7 +7755,7 @@ class JS8MeshGUI:
                 continue
 
             category = snr_category_from_reported(snr_value)
-            if category not in ("TURBO", "FAST"):
+            if category not in ("TURBO", "FAST", "NORMAL"):
                 continue
 
             candidates.append({
@@ -7850,7 +7850,7 @@ class JS8MeshGUI:
             if not link:
                 candidate_debug.append((candidate_source, "skip:no_two_way_link"))
                 continue
-            if link["category"] not in ("TURBO", "FAST"):
+            if link["category"] not in ("TURBO", "FAST", "NORMAL"):
                 candidate_debug.append(
                     (candidate_source, f"skip:category:{link['category']} snr={round(float(link['snr']), 1)} age={link['minutes_ago']}")
                 )
