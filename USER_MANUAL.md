@@ -90,8 +90,8 @@ The main window is centered around a few main areas:
   - recommended relay routes to the current target
 - `Inbound Reachability`
   - stations that may help inbound convergence
-- `RX Monitor`
-  - mirror of the JS8Call receive monitor
+- `RX/TX Monitor`
+  - view of recent JS8Call decoded and transmitting activity from `ALL.TXT`
 - `Relay Profiles`
   - summary view of known relay stations
 - `Topology`
@@ -527,12 +527,14 @@ These windows support:
 - export `.csv` where applicable
 - clear log where applicable
 
-## 15. RX Monitor
+## 15. RX/TX Monitor
 
-Use the `RX Monitor` button on the main window to view the JS8Call receive
-monitor inside JS8Mesh.
+Use the `RX/TX Monitor` button on the main window to view recent JS8Call
+decoded and transmitting activity inside JS8Mesh.
 
 Behavior:
+- reads JS8Call `ALL.TXT` directly instead of polling the JS8Call TCP API
+- shows recent RX and TX log lines
 - opens at the latest line
 - follows new lines at the bottom
 - stops auto-follow if you scroll away manually

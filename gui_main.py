@@ -123,7 +123,7 @@ class JS8MeshGUI:
         self.activity_window = None
         self.js8call_rx_monitor_window = None
         self.js8call_rx_monitor_text = None
-        self.js8call_rx_monitor_status_var = tk.StringVar(value="JS8Call RX monitor is closed.")
+        self.js8call_rx_monitor_status_var = tk.StringVar(value="JS8Call RX/TX monitor is closed.")
         self._js8call_rx_monitor_after_id = None
         self._js8call_rx_monitor_last_text = None
         self._js8call_rx_monitor_last_status = None
@@ -1194,7 +1194,8 @@ class JS8MeshGUI:
 
         message = (
             f"JS8Mesh cannot connect to JS8Call at {endpoint}.\n\n"
-            "RX Monitor, frequency sync, and Send to JS8Call need the JS8Call TCP API.\n\n"
+            "Frequency sync and Send to JS8Call need the JS8Call TCP API.\n"
+            "The RX/TX Monitor reads ALL.TXT directly, but JS8Call should still be running so the log can update.\n\n"
             "Check this on the operator's computer:\n"
             "- Start JS8Call first, then JS8Mesh.\n"
             "- In JS8Call: Settings > Reporting.\n"
@@ -1663,7 +1664,7 @@ class JS8MeshGUI:
 
         tk.Button(
             top,
-            text="RX Monitor",
+            text="RX/TX Monitor",
             command=self.show_js8call_rx_monitor_window,
             bg=self.highlight_color,
             fg=self.fg_color
@@ -4437,7 +4438,7 @@ class JS8MeshGUI:
                 pass
         self.js8call_rx_monitor_window = None
         self.js8call_rx_monitor_text = None
-        self.js8call_rx_monitor_status_var.set("JS8Call RX monitor is closed.")
+        self.js8call_rx_monitor_status_var.set("JS8Call RX/TX monitor is closed.")
         self._js8call_rx_monitor_last_text = None
         self._js8call_rx_monitor_last_status = None
         self._js8call_rx_monitor_follow_tail = True
@@ -4491,7 +4492,7 @@ class JS8MeshGUI:
                     self._js8call_rx_monitor_follow_tail = False
                 self._js8call_rx_monitor_last_text = rx_text
         except Exception as exc:
-            status_text = f"JS8Call RX monitor unavailable: {exc}"
+            status_text = f"JS8Call RX/TX monitor unavailable: {exc}"
             if status_text != self._js8call_rx_monitor_last_status:
                 self.js8call_rx_monitor_status_var.set(status_text)
                 self._js8call_rx_monitor_last_status = status_text
@@ -4510,7 +4511,7 @@ class JS8MeshGUI:
                 pass
 
         dialog = tk.Toplevel(self.root)
-        dialog.title("JS8Call RX Monitor")
+        dialog.title("JS8Call RX/TX Monitor")
         dialog.configure(bg=self.bg_color)
         dialog.geometry("980x520")
         self.js8call_rx_monitor_window = dialog
@@ -4524,7 +4525,7 @@ class JS8MeshGUI:
 
         tk.Label(
             top,
-            text="JS8Call receive-text monitor. This reads JS8Call ALL.TXT so you can watch decoded activity without polling the JS8Call TCP API.",
+            text="JS8Call RX/TX monitor. This reads JS8Call ALL.TXT so you can watch decoded and transmitting activity without polling the JS8Call TCP API.",
             bg=self.bg_color,
             fg=self.fg_color,
             anchor="w",
