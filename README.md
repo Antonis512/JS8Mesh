@@ -14,6 +14,7 @@ than JS8Call.
 ## Documentation
 
 - [USER_MANUAL.md](USER_MANUAL.md)
+- [USER_MANUAL_GR.md](USER_MANUAL_GR.md)
 
 ## Dependencies
 
