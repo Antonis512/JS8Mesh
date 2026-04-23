@@ -43,7 +43,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='JS8Mesh',
+    name='JS8Mesh-v0.10.3-beta',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

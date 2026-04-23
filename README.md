@@ -1,8 +1,8 @@
-# JS8Mesh v0.10.2-beta
+# JS8Mesh v0.10.3-beta
 
-Windows users can update JS8Mesh by replacing the old `JS8Mesh.exe` with the new one.
+Windows users can update JS8Mesh by replacing the old `.exe` with the new versioned `.exe`.
 
-JS8Mesh v0.10.2-beta is a human-supervised "mesh" awareness and relay tool for JS8Call.
+JS8Mesh v0.10.3-beta is a human-supervised "mesh" awareness and relay tool for JS8Call.
 
 JS8Mesh is not an automated routing mesh network. In JS8Call, relay stations are
 human operators who decide every time whether they want to be part of a relay chain or not.

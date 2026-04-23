@@ -503,17 +503,9 @@ def build_station_summary(records, max_age_minutes=1440, frequency=None, now=Non
         elif not _is_routed_callsign(dst):
             station["tx_direct_count"] += 1
         if dst and not _is_group_callsign(dst) and not _is_routed_callsign(dst):
+            # The recipient is pathway evidence, but not proof that we heard
+            # that recipient directly. Wave 1 stations must be transmitters.
             station["neighbors"].add(dst)
-            recipient = ensure_station(dst)
-            if recipient is not None:
-                recipient["heard_count"] += 1
-                recipient["sum_snr"] += snr_value
-                recipient["rx_direct_count"] += 1
-                recipient["neighbors"].add(src)
-                recipient["latest_minutes_ago"] = (
-                    minutes if recipient.get("latest_minutes_ago") is None
-                    else min(recipient.get("latest_minutes_ago"), minutes)
-                )
 
     for callsign, station in summary.items():
         count = station["heard_count"]

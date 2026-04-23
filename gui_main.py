@@ -97,7 +97,7 @@ from topology_engine import (
 class JS8MeshGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("JS8Mesh v0.10.2-beta by SV8TTL, 18SV8110")
+        self.root.title("JS8Mesh v0.10.3-beta by SV8TTL, 18SV8110")
 
         self.bg_color = "#222222"
         self.fg_color = "#ffffff"
@@ -128,6 +128,13 @@ class JS8MeshGUI:
         self._js8call_rx_monitor_last_text = None
         self._js8call_rx_monitor_last_status = None
         self._js8call_rx_monitor_follow_tail = True
+        self.js8call_connection_status_var = tk.StringVar(value="JS8Call: checking...")
+        self.js8call_connection_status_label = None
+        self._js8call_connection_state = "unknown"
+        self._js8call_connection_detail = ""
+        self._js8call_connection_warning_open = False
+        self._js8call_connection_check_running = False
+        self._js8call_api_busy_count = 0
         self._watched_callsign_alerts = []
         self.mesh_network_window = None
         self.mesh_report_activity_window = None
@@ -501,6 +508,7 @@ class JS8MeshGUI:
         self.root.after(30000, self._last_success_tick)
         self.root.after(30000, self._relay_ack_tick)
         self.root.after(30000, self._topology_tick)
+        self.root.after(1500, self._js8call_connection_tick)
 
     def _complete_startup_initialization(self):
         if self._startup_completed:
@@ -1110,7 +1118,9 @@ class JS8MeshGUI:
         try:
             with self._new_js8call_bridge() as bridge:
                 dial_text = bridge.get_dial_frequency()
-        except Exception:
+            self._set_js8call_connection_status(True)
+        except Exception as exc:
+            self._set_js8call_connection_status(False, str(exc), warn=True)
             return False
 
         normalized = self._normalize_frequency_text(dial_text)
@@ -1135,6 +1145,118 @@ class JS8MeshGUI:
         except Exception:
             pass
         return True
+
+    def _js8call_api_endpoint_text(self):
+        host = str(settings.get("js8call_host", "127.0.0.1")).strip() or "127.0.0.1"
+        try:
+            port = int(settings.get("js8call_port", 2442))
+        except Exception:
+            port = 2442
+        return f"{host}:{port}"
+
+    def _configure_js8call_connection_label(self, color):
+        label = getattr(self, "js8call_connection_status_label", None)
+        if label is None:
+            return
+        try:
+            label.configure(fg=color)
+        except Exception:
+            pass
+
+    def _set_js8call_connection_status(self, connected, detail="", warn=False):
+        endpoint = self._js8call_api_endpoint_text()
+        if connected:
+            self._js8call_connection_state = "connected"
+            self._js8call_connection_detail = ""
+            self.js8call_connection_status_var.set(f"JS8Call: connected ({endpoint})")
+            self._configure_js8call_connection_label("#66ff66")
+            return
+
+        previous_state = str(getattr(self, "_js8call_connection_state", "unknown") or "unknown")
+        self._js8call_connection_state = "disconnected"
+        self._js8call_connection_detail = str(detail or "").strip()
+        self.js8call_connection_status_var.set(f"JS8Call: NOT connected ({endpoint})")
+        self._configure_js8call_connection_label("#ff6666")
+
+        if warn and previous_state != "disconnected":
+            self._show_js8call_connection_warning_once()
+
+    def _show_js8call_connection_warning_once(self):
+        if bool(getattr(self, "_js8call_connection_warning_open", False)):
+            return
+
+        self._js8call_connection_warning_open = True
+        endpoint = self._js8call_api_endpoint_text()
+        detail = str(getattr(self, "_js8call_connection_detail", "") or "").strip()
+        if detail:
+            detail_text = f"\n\nDetails:\n{detail}"
+        else:
+            detail_text = ""
+
+        message = (
+            f"JS8Mesh cannot connect to JS8Call at {endpoint}.\n\n"
+            "RX Monitor, frequency sync, and Send to JS8Call need the JS8Call TCP API.\n\n"
+            "Check this on the operator's computer:\n"
+            "- Start JS8Call first, then JS8Mesh.\n"
+            "- In JS8Call: Settings > Reporting.\n"
+            "- Enable TCP Server API.\n"
+            "- Enable Accept TCP Requests.\n"
+            "- Use TCP Server Hostname 127.0.0.1 and TCP Server Port 2442, unless JS8Mesh API Settings were changed to match."
+            "\n\nAfter fixing JS8Call settings, wait up to 15 seconds for the JS8Mesh connectivity status to update."
+            f"{detail_text}"
+        )
+
+        def _show():
+            try:
+                self._dark_info_dialog("JS8Call Not Connected", message)
+            finally:
+                self._js8call_connection_warning_open = False
+
+        self.root.after(0, _show)
+
+    def _js8call_connection_tick(self):
+        if int(getattr(self, "_js8call_api_busy_count", 0) or 0) > 0:
+            try:
+                self.root.after(15000, self._js8call_connection_tick)
+            except Exception:
+                pass
+            return
+
+        monitor_window = getattr(self, "js8call_rx_monitor_window", None)
+        try:
+            if monitor_window is not None and monitor_window.winfo_exists():
+                self.root.after(15000, self._js8call_connection_tick)
+                return
+        except Exception:
+            pass
+
+        if not bool(getattr(self, "_js8call_connection_check_running", False)):
+            self._js8call_connection_check_running = True
+
+            def worker():
+                try:
+                    with self._new_js8call_bridge(timeout=1.25) as bridge:
+                        bridge.get_dial_frequency()
+                except Exception as exc:
+                    error_text = str(exc)
+                    try:
+                        self.root.after(0, lambda error_text=error_text: self._set_js8call_connection_status(False, error_text, warn=True))
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        self.root.after(0, lambda: self._set_js8call_connection_status(True))
+                    except Exception:
+                        pass
+                finally:
+                    self._js8call_connection_check_running = False
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        try:
+            self.root.after(15000, self._js8call_connection_tick)
+        except Exception:
+            pass
 
     def _callsign_requirement_key_for_frequency(self, frequency_text):
         if self._special_callsign_matches_frequency(frequency_text):
@@ -1636,6 +1758,16 @@ class JS8MeshGUI:
             bg=self.bg_color,
             fg=self.fg_color
         ).grid(row=1, column=8, sticky="w")
+
+        self.js8call_connection_status_label = tk.Label(
+            top,
+            textvariable=self.js8call_connection_status_var,
+            bg=self.bg_color,
+            fg="#ffcc66",
+            anchor="e",
+            justify="right",
+        )
+        self.js8call_connection_status_label.grid(row=1, column=9, columnspan=3, sticky="e", padx=(12, 5))
 
         self.main_pane = tk.PanedWindow(
             self.root,
@@ -3179,7 +3311,7 @@ class JS8MeshGUI:
 
     def show_about(self):
         about = tk.Toplevel(self.root)
-        about.title("About JS8Mesh v0.10.2-beta")
+        about.title("About JS8Mesh v0.10.3-beta")
         about.configure(bg=self.bg_color)
 
         outer = tk.Frame(about, bg=self.bg_color, padx=18, pady=18)
@@ -3187,7 +3319,7 @@ class JS8MeshGUI:
 
         tk.Label(
             outer,
-            text="JS8Mesh v0.10.2-beta by SV8TTL, 18SV8110",
+            text="JS8Mesh v0.10.3-beta by SV8TTL, 18SV8110",
             bg=self.bg_color,
             fg=self.fg_color,
             anchor="w",
@@ -4299,6 +4431,7 @@ class JS8MeshGUI:
 
         try:
             dial_text, rx_text = self._load_js8call_rx_text()
+            self._set_js8call_connection_status(True)
             normalized_frequency = self._normalize_frequency_text(dial_text)
             raw_frequency = str(dial_text or "").strip()
             if normalized_frequency:
@@ -4336,6 +4469,7 @@ class JS8MeshGUI:
                     self._js8call_rx_monitor_follow_tail = False
                 self._js8call_rx_monitor_last_text = rx_text
         except Exception as exc:
+            self._set_js8call_connection_status(False, str(exc), warn=True)
             status_text = f"JS8Call RX monitor unavailable: {exc}"
             if status_text != self._js8call_rx_monitor_last_status:
                 self.js8call_rx_monitor_status_var.set(status_text)
@@ -8316,13 +8450,15 @@ class JS8MeshGUI:
     def _js8call_send_status_dialog(self, title, message_text):
         self._dark_info_dialog(title, message_text)
 
-    def _new_js8call_bridge(self):
+    def _new_js8call_bridge(self, timeout=None):
         host = str(settings.get("js8call_host", "127.0.0.1")).strip() or "127.0.0.1"
         try:
             port = int(settings.get("js8call_port", 2442))
         except Exception:
             port = 2442
-        return JS8CallBridge(host=host, port=port)
+        if timeout is None:
+            return JS8CallBridge(host=host, port=port)
+        return JS8CallBridge(host=host, port=port, timeout=timeout)
 
     def _estimated_send_timeout_seconds(self, message_text, mode_name):
         text = str(message_text or "").strip()
@@ -8364,9 +8500,17 @@ class JS8MeshGUI:
             return
 
         def worker():
+            def finish_api_busy():
+                self._js8call_api_busy_count = max(0, int(getattr(self, "_js8call_api_busy_count", 1) or 1) - 1)
+
             timeout_seconds = self._estimated_send_timeout_seconds(text, target_mode)
+            self._js8call_api_busy_count = int(getattr(self, "_js8call_api_busy_count", 0) or 0) + 1
             try:
                 with self._new_js8call_bridge() as bridge:
+                    try:
+                        self.root.after(0, lambda: self._set_js8call_connection_status(True))
+                    except Exception:
+                        pass
                     if allow_auto_send:
                         selected_call = bridge.get_selected_call()
                         if selected_call:
@@ -8409,6 +8553,11 @@ class JS8MeshGUI:
                                 pass
             except JS8CallBridgeError as exc:
                 error_text = str(exc)
+                if any(marker in error_text for marker in ("Could not connect", "Lost connection", "Failed to send raw", "Failed to send message")):
+                    try:
+                        self.root.after(0, lambda error_text=error_text: self._set_js8call_connection_status(False, error_text, warn=False))
+                    except Exception:
+                        pass
                 if callable(error_callback):
                     try:
                         self.root.after(0, lambda error_text=error_text: error_callback(error_text))
@@ -8424,6 +8573,7 @@ class JS8MeshGUI:
                             refocus_widget=parent_window,
                         ),
                     )
+                finish_api_busy()
                 return
             except Exception as exc:
                 error_text = f"Unexpected error while sending to JS8Call:\n\n{exc}"
@@ -8442,8 +8592,10 @@ class JS8MeshGUI:
                             refocus_widget=parent_window,
                         ),
                     )
+                finish_api_busy()
                 return
 
+            finish_api_busy()
             manual_send_only = bool(result.get("manual_send_only"))
             original_speed = str(result.get("original_speed", "") or "").strip()
 
