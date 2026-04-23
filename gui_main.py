@@ -500,7 +500,6 @@ class JS8MeshGUI:
         if self._background_loops_started:
             return
         self._background_loops_started = True
-        threading.Thread(target=self._monitor_js8call_incoming_messages, daemon=True).start()
         threading.Thread(target=self.monitor_directed, daemon=True).start()
         self.root.after(3000, self._sync_frequency_from_js8call_tick)
         self.root.after(1000, self._mesh_scheduler_tick)
@@ -4346,15 +4345,49 @@ class JS8MeshGUI:
         dialog.focus_force()
 
     def _load_js8call_rx_text(self):
-        dial_text = ""
-        rx_text = ""
-        try:
-            with self._new_js8call_bridge() as bridge:
-                dial_text = bridge.get_dial_frequency() or ""
-                rx_text = bridge.get_rx_text() or ""
-        except Exception as exc:
-            raise JS8CallBridgeError(str(exc)) from exc
-        return str(dial_text or "").strip(), str(rx_text or "")
+        all_txt_path = self._js8call_all_txt_path()
+        if not all_txt_path or not os.path.exists(all_txt_path):
+            raise JS8CallBridgeError(
+                "JS8Call ALL.TXT was not found. Start JS8Call first and check that DIRECTED.TXT is selected correctly."
+            )
+
+        rx_text, line_count = self._read_text_file_tail(all_txt_path, max_lines=500)
+        status_text = f"Reading JS8Call ALL.TXT: last {line_count} line(s)"
+        return status_text, rx_text
+
+    def _js8call_all_txt_path(self):
+        directed_path = str(getattr(self, "directed_file", "") or settings.get("directed_file", "") or "").strip()
+        candidate_paths = []
+        if directed_path:
+            candidate_paths.append(os.path.join(os.path.dirname(directed_path), "ALL.TXT"))
+
+        local_appdata = os.environ.get("LOCALAPPDATA", "")
+        if local_appdata:
+            candidate_paths.append(os.path.join(local_appdata, "JS8Call", "ALL.TXT"))
+
+        for path in candidate_paths:
+            if path and os.path.exists(path):
+                return path
+        return candidate_paths[0] if candidate_paths else ""
+
+    def _read_text_file_tail(self, path, max_lines=500, max_bytes=524288):
+        max_lines = max(1, int(max_lines or 500))
+        max_bytes = max(4096, int(max_bytes or 524288))
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            file_size = handle.tell()
+            start = max(0, file_size - max_bytes)
+            handle.seek(start)
+            data = handle.read()
+
+        text = data.decode("utf-8", errors="replace")
+        if start > 0:
+            text = text.split("\n", 1)[1] if "\n" in text else text
+
+        lines = text.splitlines()
+        if len(lines) > max_lines:
+            lines = lines[-max_lines:]
+        return "\n".join(lines), len(lines)
 
     def _copy_js8call_rx_monitor_text(self):
         widget = self.js8call_rx_monitor_text
@@ -4430,18 +4463,7 @@ class JS8MeshGUI:
             return
 
         try:
-            dial_text, rx_text = self._load_js8call_rx_text()
-            self._set_js8call_connection_status(True)
-            normalized_frequency = self._normalize_frequency_text(dial_text)
-            raw_frequency = str(dial_text or "").strip()
-            if normalized_frequency:
-                display_frequency = normalized_frequency
-            elif raw_frequency:
-                display_frequency = raw_frequency
-            else:
-                display_frequency = "Unknown"
-
-            status_text = f"JS8Call dial frequency: {display_frequency}"
+            status_text, rx_text = self._load_js8call_rx_text()
             if status_text != self._js8call_rx_monitor_last_status:
                 self.js8call_rx_monitor_status_var.set(status_text)
                 self._js8call_rx_monitor_last_status = status_text
@@ -4469,13 +4491,12 @@ class JS8MeshGUI:
                     self._js8call_rx_monitor_follow_tail = False
                 self._js8call_rx_monitor_last_text = rx_text
         except Exception as exc:
-            self._set_js8call_connection_status(False, str(exc), warn=True)
             status_text = f"JS8Call RX monitor unavailable: {exc}"
             if status_text != self._js8call_rx_monitor_last_status:
                 self.js8call_rx_monitor_status_var.set(status_text)
                 self._js8call_rx_monitor_last_status = status_text
 
-        self._js8call_rx_monitor_after_id = self.root.after(2000, self._refresh_js8call_rx_monitor)
+        self._js8call_rx_monitor_after_id = self.root.after(4000, self._refresh_js8call_rx_monitor)
 
     def show_js8call_rx_monitor_window(self):
         if self.js8call_rx_monitor_window is not None:
@@ -4503,7 +4524,7 @@ class JS8MeshGUI:
 
         tk.Label(
             top,
-            text="JS8Call receive-text monitor. This mirrors the JS8Call message box so you can watch incoming text while working in JS8Mesh.",
+            text="JS8Call receive-text monitor. This reads JS8Call ALL.TXT so you can watch decoded activity without polling the JS8Call TCP API.",
             bg=self.bg_color,
             fg=self.fg_color,
             anchor="w",
