@@ -97,7 +97,7 @@ from topology_engine import (
 class JS8MeshGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("JS8Mesh v0.10.3-beta by SV8TTL, 18SV8110")
+        self.root.title("JS8Mesh v0.10.4-beta by SV8TTL, 18SV8110")
 
         self.bg_color = "#222222"
         self.fg_color = "#ffffff"
@@ -135,6 +135,7 @@ class JS8MeshGUI:
         self._js8call_connection_warning_open = False
         self._js8call_connection_check_running = False
         self._js8call_api_busy_count = 0
+        self._js8call_tx_active_until = 0.0
         self._watched_callsign_alerts = []
         self.mesh_network_window = None
         self.mesh_report_activity_window = None
@@ -1114,6 +1115,8 @@ class JS8MeshGUI:
     def _sync_frequency_from_js8call_once(self):
         if not bool(self.sync_frequency_from_js8call_var.get()):
             return False
+        if self._js8call_tx_is_active():
+            return False
         try:
             with self._new_js8call_bridge() as bridge:
                 dial_text = bridge.get_dial_frequency()
@@ -1180,6 +1183,20 @@ class JS8MeshGUI:
         if warn and previous_state != "disconnected":
             self._show_js8call_connection_warning_once()
 
+    def _mark_js8call_tx_active(self, seconds=None):
+        try:
+            duration = float(seconds or 0.0)
+        except Exception:
+            duration = 0.0
+        duration = max(30.0, duration)
+        self._js8call_tx_active_until = max(
+            float(getattr(self, "_js8call_tx_active_until", 0.0) or 0.0),
+            time.time() + duration,
+        )
+
+    def _js8call_tx_is_active(self):
+        return time.time() < float(getattr(self, "_js8call_tx_active_until", 0.0) or 0.0)
+
     def _show_js8call_connection_warning_once(self):
         if bool(getattr(self, "_js8call_connection_warning_open", False)):
             return
@@ -1215,6 +1232,13 @@ class JS8MeshGUI:
         self.root.after(0, _show)
 
     def _js8call_connection_tick(self):
+        if self._js8call_tx_is_active():
+            try:
+                self.root.after(15000, self._js8call_connection_tick)
+            except Exception:
+                pass
+            return
+
         if int(getattr(self, "_js8call_api_busy_count", 0) or 0) > 0:
             try:
                 self.root.after(15000, self._js8call_connection_tick)
@@ -3311,7 +3335,7 @@ class JS8MeshGUI:
 
     def show_about(self):
         about = tk.Toplevel(self.root)
-        about.title("About JS8Mesh v0.10.3-beta")
+        about.title("About JS8Mesh v0.10.4-beta")
         about.configure(bg=self.bg_color)
 
         outer = tk.Frame(about, bg=self.bg_color, padx=18, pady=18)
@@ -3319,7 +3343,7 @@ class JS8MeshGUI:
 
         tk.Label(
             outer,
-            text="JS8Mesh v0.10.3-beta by SV8TTL, 18SV8110",
+            text="JS8Mesh v0.10.4-beta by SV8TTL, 18SV8110",
             bg=self.bg_color,
             fg=self.fg_color,
             anchor="w",
@@ -8534,6 +8558,7 @@ class JS8MeshGUI:
                     except Exception:
                         pass
                     if allow_auto_send:
+                        self._mark_js8call_tx_active(timeout_seconds + 30)
                         selected_call = bridge.get_selected_call()
                         if selected_call:
                             raise JS8CallBridgeError(
@@ -8548,7 +8573,10 @@ class JS8MeshGUI:
                             on_tx_started=(
                                 (lambda partial_result: self.root.after(
                                     0,
-                                    lambda partial_result=dict(partial_result): early_success_callback(partial_result),
+                                    lambda partial_result=dict(partial_result): (
+                                        self._mark_js8call_tx_active(timeout_seconds + 30),
+                                        early_success_callback(partial_result),
+                                    ),
                                 ))
                                 if callable(early_success_callback)
                                 else None
