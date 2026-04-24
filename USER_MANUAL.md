@@ -43,6 +43,11 @@ need:
 - Tk/Tkinter support
 - run the app from `main.py`
 
+Important Linux note:
+- install `pyjs8call` before running `main.py`
+- on Ubuntu 24.04 and similar systems, you may need a `venv` if direct `pip`
+  installation is blocked
+
 Compatibility note:
 - JS8Mesh is designed for JS8Call versions that provide
   `DIRECTED.TXT`-compatible directed-message output
@@ -570,6 +575,14 @@ python main.py
 Linux:
 ```bash
 python3 -m pip install pyjs8call
+python3 main.py
+```
+
+Linux with `venv`:
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install pyjs8call
 python3 main.py
 ```
 

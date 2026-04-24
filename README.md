@@ -30,6 +30,11 @@ For users running JS8Mesh from source:
 Linux users should expect to run JS8Mesh from source unless they create their
 own packaged build.
 
+Important Linux note:
+- install `pyjs8call` before running `main.py`
+- on Ubuntu 24.04 and similar systems, a `venv` may be needed if direct `pip`
+  installation is blocked
+
 ## Run From Source
 
 Windows PowerShell:
@@ -43,6 +48,15 @@ Linux:
 
 ```bash
 python3 -m pip install pyjs8call
+python3 main.py
+```
+
+Linux with `venv`:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install pyjs8call
 python3 main.py
 ```
 
